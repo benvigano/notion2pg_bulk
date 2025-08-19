@@ -49,6 +49,9 @@ class NotionMigrator:
         try:
             self.progress.log("🚀 Starting Notion workspace migration to PostgreSQL...")
             
+            # Check if schemas already exist
+            self._check_clean_database()
+            
             # Phase 1: Discover databases
             self.progress.start_phase("🔍 Discovering databases", None)
             databases = self._get_databases()
@@ -84,6 +87,35 @@ class NotionMigrator:
             
         finally:
             self.progress.cleanup()
+    
+    def _check_clean_database(self) -> None:
+        """Check that required schemas don't already exist."""
+        with self.db_engine.connect() as conn:
+            # Check if content schema exists
+            result = conn.execute(text(
+                "SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'content'"
+            ))
+            if result.fetchone():
+                raise ValueError(
+                    "❌ Schema 'content' already exists. "
+                    "Please drop existing schemas or use a clean database:\n"
+                    "DROP SCHEMA content CASCADE;\n"
+                    "DROP SCHEMA select_options CASCADE;"
+                )
+            
+            # Check if select_options schema exists  
+            result = conn.execute(text(
+                "SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'select_options'"
+            ))
+            if result.fetchone():
+                raise ValueError(
+                    "❌ Schema 'select_options' already exists. "
+                    "Please drop existing schemas or use a clean database:\n"
+                    "DROP SCHEMA content CASCADE;\n"
+                    "DROP SCHEMA select_options CASCADE;"
+                )
+            
+            self.progress.log("✅ Database is clean - no conflicting schemas found")
     
     def _get_databases(self) -> List[Dict[str, Any]]:
         """Get all accessible databases with their detailed schemas."""
@@ -192,11 +224,11 @@ class NotionMigrator:
             # Get table name that will be created
             table_name = self._clean_table_name(title)
             
-            # Create option table names preview (using double underscore for clarity)
+            # Create option table names preview (in select_options schema)
             option_table_names = []
             for field_name in all_option_fields:
                 clean_field_name = self._clean_table_name(field_name)
-                option_table_names.append(f"{table_name}__{clean_field_name}")
+                option_table_names.append(f"select_options.{table_name}__{clean_field_name}")
             
             data.append({
                 "Database": title,
@@ -269,8 +301,8 @@ class NotionMigrator:
             if self.property_mapper.needs_lookup_table(prop_config):
                 lookup_table_configs.append((prop_name, prop_config))
         
-        # Create main table
-        table = Table(table_name, self.metadata, *columns)
+        # Create main table in 'content' schema
+        table = Table(table_name, self.metadata, *columns, schema='content')
         
         # Add table comment
         if details.get("description"):
@@ -278,7 +310,7 @@ class NotionMigrator:
                                      for item in details["description"])
             table.comment = description_text
         
-        # Create option tables for select and multi-select properties
+        # Create option tables for select and multi-select properties in 'select_options' schema
         for prop_name, prop_config in lookup_table_configs:
             option_table_name = self.property_mapper.get_lookup_table_name(table_name, prop_name)
             option_table = Table(
@@ -286,11 +318,18 @@ class NotionMigrator:
                 self.metadata,
                 Column("id", String(36), primary_key=True),
                 Column("value", String(255), nullable=False),
-                Column("color", String(50))
+                Column("color", String(50)),
+                schema='select_options'
             )
             self.lookup_tables[f"{table_name}_{prop_name}"] = option_table
         
         self.created_tables[db_id] = table
+        
+        # Create schemas if they don't exist, then create tables
+        with self.db_engine.connect() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS content"))
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS select_options"))
+            conn.commit()
         
         # Create tables in database
         self.metadata.create_all(self.db_engine)
