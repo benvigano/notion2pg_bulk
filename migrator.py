@@ -293,7 +293,9 @@ class NotionMigrator:
         columns.append(Column("notion_id", String(36), primary_key=True))
         
         for prop_name, prop_config in properties.items():
-            column = self.property_mapper.get_postgres_column(prop_name, prop_config)
+            # Clean property name for SQL compatibility
+            clean_prop_name = self._clean_table_name(prop_name)
+            column = self.property_mapper.get_postgres_column(clean_prop_name, prop_config)
             if column is not None:
                 columns.append(column)
             
@@ -386,11 +388,13 @@ class NotionMigrator:
                 if prop_config.get("type") in ["formula", "rollup"]:
                     continue
                 
+                # Use cleaned property name for SQL compatibility
+                clean_prop_name = self._clean_table_name(prop_name)
                 prop_data = page_properties.get(prop_name, {})
                 value = self.property_mapper.extract_property_value(
                     prop_data, prop_config["type"]
                 )
-                row_data[prop_name] = value
+                row_data[clean_prop_name] = value
             
             rows.append(row_data)
         
