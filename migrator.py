@@ -83,6 +83,10 @@ class NotionMigrator:
                 self.progress.update(1)
             self.progress.finish_phase()
             
+            # Phase 4: Validate relations
+            self.progress.log("\n🔍 Validating relation references...")
+            self._validate_relations()
+            
             self.progress.log("✅ Migration completed successfully!")
             
         finally:
@@ -451,3 +455,78 @@ class NotionMigrator:
         if len(cleaned) > 50:
             cleaned = cleaned[:50].rstrip('_')
         return cleaned.lower()
+    
+    def _validate_relations(self) -> None:
+        """Check for relation references to tables not in migration scope."""
+        # Get all migrated table IDs for quick lookup
+        migrated_table_ids = set(self.created_tables.keys())
+        
+        issues = []
+        total_relations = 0
+        
+        # Check each migrated table for relation fields
+        for db_info in self._get_databases():
+            db_id = db_info["id"]
+            if db_id not in migrated_table_ids:
+                continue
+                
+            table_name = self._clean_table_name(db_info["title"])
+            properties = db_info["details"]["properties"]
+            
+            # Find relation properties
+            for prop_name, prop_config in properties.items():
+                if prop_config.get("type") == "relation":
+                    relation_config = prop_config.get("relation", {})
+                    target_db_id = relation_config.get("database_id")
+                    
+                    if target_db_id:
+                        total_relations += 1
+                        if target_db_id not in migrated_table_ids:
+                            # Find the target database name
+                            target_db_name = self._get_database_name_by_id(target_db_id)
+                            issues.append({
+                                "source_table": table_name,
+                                "source_field": self._clean_table_name(prop_name),
+                                "target_db_name": target_db_name or f"Unknown ({target_db_id[:8]}...)",
+                                "target_db_id": target_db_id
+                            })
+        
+        # Report results
+        if issues:
+            self.progress.log("⚠️  Found relation references to tables not in migration scope:")
+            self.progress.log("=" * 70)
+            
+            # Group by target database for cleaner output
+            from collections import defaultdict
+            by_target = defaultdict(list)
+            for issue in issues:
+                by_target[issue["target_db_name"]].append(issue)
+            
+            for target_name, target_issues in by_target.items():
+                self.progress.log(f"📋 Target: {target_name}")
+                for issue in target_issues:
+                    self.progress.log(f"   ↳ {issue['source_table']}.{issue['source_field']}")
+                self.progress.log("")
+            
+            self.progress.log(f"💡 To fix: Share these {len(by_target)} databases with your Notion integration")
+            self.progress.log("   or remove the relation fields from the migration scope.")
+            self.progress.log("=" * 70)
+        else:
+            self.progress.log("✅ All relation references are valid (within migration scope)")
+        
+        self.progress.log(f"📊 Summary: {total_relations} relation fields checked, {len(issues)} issues found")
+    
+    def _get_database_name_by_id(self, db_id: str) -> str:
+        """Get database name by ID from the original discovery results."""
+        # This is a simplified lookup - in a full implementation we'd cache this
+        try:
+            response = self.rate_limiter.rate_limited_call(
+                self.notion.databases.retrieve,
+                database_id=db_id
+            )
+            title_property = response.get("title", [])
+            if title_property:
+                return "".join(item.get("plain_text", "") for item in title_property)
+            return None
+        except:
+            return None
