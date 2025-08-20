@@ -439,7 +439,7 @@ class NotionMigrator:
                             "source_field": prop_name,
                             "source_table_original": original_table_name,
                             "source_db_id": db_id,
-                            "target_db_name": target_db_name or f"Unknown ({target_db_id[:8]}...)",
+                            "target_db_name": target_db_name or f"Unknown ({target_db_id})",
                             "target_db_id": target_db_id
                         })
         
@@ -785,7 +785,7 @@ class NotionMigrator:
                 table_name = self._clean_table_name(title)
                 return f"[Embedded Database: {title} → PostgreSQL table: content.{table_name}]"
             else:
-                return f"[Embedded Database: {title} (ID: {database_id[:8]}...) - Not migrated]"
+                return f"[Embedded Database: {title} (ID: {database_id}) - Not migrated]"
         
         # For blocks we don't handle, return empty string
         return ""
