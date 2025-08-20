@@ -69,7 +69,7 @@ class NotionMigrator:
                 self.progress.log("No Notion databases found. Please share databases with your integration.")
                 return
             
-            # Show migration plan
+            # Show migration plan with analysis
             self._show_migration_plan(databases)
             
             # Get user confirmation
@@ -93,14 +93,11 @@ class NotionMigrator:
             
             self.progress.log("✅ Migration completed successfully")
             
-            # Phase 4: Show post-migration analysis
-            self.progress.log("\n" + "=" * 70)
-            self.progress.log("POST-MIGRATION ANALYSIS")
-            self.progress.log("=" * 70)
-            
-            self._show_skipped_properties_summary()
-            self._validate_relations()
+            # Post-migration analysis (only embedded databases)
             if self.extract_page_content:
+                self.progress.log("\n" + "=" * 70)
+                self.progress.log("MIGRATION NOTES")
+                self.progress.log("=" * 70)
                 self._show_embedded_databases_summary()
             
         finally:
@@ -275,16 +272,181 @@ class NotionMigrator:
         
         self.progress.log(pretty_table)
         
+        # Show analysis as part of migration plan
+        self._show_migration_analysis(databases)
+        
         self.progress.log("")
         self.progress.log("=" * 70)
     
     def _get_user_confirmation(self) -> bool:
-        """Get user confirmation to proceed with migration."""
+        """Get user confirmation before proceeding with migration."""
         try:
             response = input("\nProceed with migration? (y/N): ").strip().lower()
             return response in ['y', 'yes']
         except (EOFError, KeyboardInterrupt):
             return False
+    
+    def _show_migration_analysis(self, databases: List[Dict]) -> None:
+        """Analyze and show properties that will be skipped and missing relations."""
+        skipped_properties = []
+        
+        # Analyze each database for skipped properties
+        for db_info in databases:
+            db_id = db_info["id"]
+            title = db_info["title"]
+            properties = db_info["details"]["properties"]
+            
+            for prop_name, prop_config in properties.items():
+                prop_type = prop_config.get("type")
+                
+                if prop_type in ["formula", "rollup"]:
+                    skipped_properties.append({
+                        "property": prop_name,
+                        "type": prop_type,
+                        "reason": "Computed property - values are derived from other data",
+                        "original_db_name": title,
+                        "db_id": db_id
+                    })
+                elif not self._is_property_type_supported(prop_type):
+                    skipped_properties.append({
+                        "property": prop_name,
+                        "type": prop_type,
+                        "reason": "Unsupported property type",
+                        "original_db_name": title,
+                        "db_id": db_id
+                    })
+        
+        if not skipped_properties:
+            return
+        
+        self.progress.log(f"\nℹ️ Skipped Fields (unsupported by Notion API):")
+        
+        # Group by type (formula vs rollup)
+        from collections import defaultdict
+        by_type = defaultdict(list)
+        for prop in skipped_properties:
+            prop_type = prop["type"]
+            if prop_type in ["formula", "rollup"]:
+                by_type[prop_type].append(prop)
+            else:
+                by_type["unsupported"].append(prop)
+        
+        # Show formulas grouped by Notion database
+        if "formula" in by_type:
+            self.progress.log("Formula Fields:")
+            by_db = defaultdict(list)
+            for prop in by_type["formula"]:
+                original_db_name = prop.get("original_db_name", "unknown")
+                db_id = prop.get("db_id", "unknown")
+                by_db[original_db_name].append({"property": prop["property"], "db_id": db_id})
+            
+            for db_name, prop_data in by_db.items():
+                db_id = prop_data[0]["db_id"]
+                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
+                for prop_info in prop_data:
+                    self.progress.log(f"  - Field: '{prop_info['property']}'")
+            self.progress.log("")
+        
+        # Show rollups grouped by Notion database
+        if "rollup" in by_type:
+            self.progress.log("Rollup Fields:")
+            by_db = defaultdict(list)
+            for prop in by_type["rollup"]:
+                original_db_name = prop.get("original_db_name", "unknown")
+                db_id = prop.get("db_id", "unknown")
+                by_db[original_db_name].append({"property": prop["property"], "db_id": db_id})
+            
+            for db_name, prop_data in by_db.items():
+                db_id = prop_data[0]["db_id"]
+                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
+                for prop_info in prop_data:
+                    self.progress.log(f"  - Field: '{prop_info['property']}'")
+            self.progress.log("")
+        
+        # Show unsupported
+        if "unsupported" in by_type:
+            self.progress.log("Unsupported fields:")
+            by_db = defaultdict(list)
+            for prop in by_type["unsupported"]:
+                original_db_name = prop.get("original_db_name", "unknown")
+                by_db[original_db_name].append(f"{prop['property']} ({prop['type']})")
+            
+            for db_name, props in by_db.items():
+                # Get database ID for this section
+                db_id = "unknown"
+                for prop in by_type["unsupported"]:
+                    if prop.get("original_db_name") == db_name:
+                        db_id = prop.get("db_id", "unknown")
+                        break
+                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
+                for prop in props:
+                    self.progress.log(f"  - Field: '{prop}'")
+            self.progress.log("")
+        
+        total_skipped = len(skipped_properties)
+        if total_skipped > 0:
+            self.progress.log(f"Total: {total_skipped} fields will be skipped")
+        
+        # Also show missing relation references
+        self._show_missing_relations(databases)
+    
+    def _is_property_type_supported(self, property_type: str) -> bool:
+        """Check if a property type is supported for migration."""
+        supported_types = {
+            "title", "rich_text", "number", "select", "multi_select", 
+            "date", "checkbox", "url", "email", "phone_number", 
+            "relation", "people", "files", "created_time", "created_by", 
+            "last_edited_time", "last_edited_by"
+        }
+        return property_type in supported_types
+    
+    def _show_missing_relations(self, databases: List[Dict]) -> None:
+        """Show relation references to tables not in migration scope."""
+        # Get all database IDs that will be migrated
+        migrated_table_ids = set(db["id"] for db in databases)
+        
+        issues = []
+        
+        # Check each database for relation fields
+        for db_info in databases:
+            db_id = db_info["id"]
+            original_table_name = db_info["title"]
+            properties = db_info["details"]["properties"]
+            
+            # Find relation properties
+            for prop_name, prop_config in properties.items():
+                if prop_config.get("type") == "relation":
+                    relation_config = prop_config.get("relation", {})
+                    target_db_id = relation_config.get("database_id")
+                    
+                    if target_db_id and target_db_id not in migrated_table_ids:
+                        # Find the target database name
+                        target_db_name = self._get_database_name_by_id(target_db_id)
+                        issues.append({
+                            "source_field": prop_name,
+                            "source_table_original": original_table_name,
+                            "source_db_id": db_id,
+                            "target_db_name": target_db_name or f"Unknown ({target_db_id[:8]}...)",
+                            "target_db_id": target_db_id
+                        })
+        
+        # Report results only if there are issues
+        if issues:
+            self.progress.log("\nℹ️ Table(s) referenced in relation fields, but not found:")
+            
+            # Group by target database for cleaner output
+            from collections import defaultdict
+            by_target = defaultdict(list)
+            for issue in issues:
+                by_target[issue["target_db_name"]].append(issue)
+            
+            for target_name, target_issues in by_target.items():
+                target_db_id = target_issues[0]["target_db_id"]
+                self.progress.log(f"- Table: '{target_name}' ({target_db_id})")
+                self.progress.log("  - Referenced by:")
+                for issue in target_issues:
+                    self.progress.log(f"    - Field: '{issue['source_field']}' of table '{issue['source_table_original']}' ({issue['source_db_id']})")
+                self.progress.log("")
     
     def _create_table_schema(self, db_info: Dict) -> None:
         """Create PostgreSQL table schema for a Notion database."""
@@ -505,64 +667,7 @@ class NotionMigrator:
             cleaned = cleaned[:50].rstrip('_')
         return cleaned.lower()
     
-    def _validate_relations(self) -> None:
-        """Check for relation references to tables not in migration scope."""
-        # Get all migrated table IDs for quick lookup
-        migrated_table_ids = set(self.created_tables.keys())
-        
-        issues = []
-        total_relations = 0
-        
-        # Check each migrated table for relation fields
-        for db_info in self._get_databases():
-            db_id = db_info["id"]
-            if db_id not in migrated_table_ids:
-                continue
-                
-            table_name = self._clean_table_name(db_info["title"])
-            original_table_name = db_info["title"]  # Keep original name
-            properties = db_info["details"]["properties"]
-            
-            # Find relation properties
-            for prop_name, prop_config in properties.items():
-                if prop_config.get("type") == "relation":
-                    relation_config = prop_config.get("relation", {})
-                    target_db_id = relation_config.get("database_id")
-                    
-                    if target_db_id:
-                        total_relations += 1
-                        if target_db_id not in migrated_table_ids:
-                            # Find the target database name
-                            target_db_name = self._get_database_name_by_id(target_db_id)
-                            issues.append({
-                                "source_table": table_name,
-                                "source_field": prop_name,  # Use original field name
-                                "source_table_original": original_table_name,  # Store original table name
-                                "source_db_id": db_id,
-                                "target_db_name": target_db_name or f"Unknown ({target_db_id[:8]}...)",
-                                "target_db_id": target_db_id
-                            })
-        
-        # Report results only if there are issues
-        if issues:
-            self.progress.log("\nℹ️ Table(s) referenced in relation properties, but not found:")
-            self.progress.log("=" * 70)
-            
-            # Group by target database for cleaner output
-            from collections import defaultdict
-            by_target = defaultdict(list)
-            for issue in issues:
-                by_target[issue["target_db_name"]].append(issue)
-            
-            for target_name, target_issues in by_target.items():
-                target_db_id = target_issues[0]["target_db_id"]
-                self.progress.log(f"- Table: '{target_name}' ({target_db_id})")
-                self.progress.log("  - Referenced by:")
-                for issue in target_issues:
-                    self.progress.log(f"    - Field: '{issue['source_field']}' of table '{issue['source_table_original']}' ({issue['source_db_id']})")
-                self.progress.log("")
 
-    
     def _get_database_name_by_id(self, db_id: str) -> str:
         """Get database name by ID from the original discovery results."""
         # This is a simplified lookup - in a full implementation we'd cache this
@@ -678,84 +783,7 @@ class NotionMigrator:
             return ""
         return "".join(item.get("plain_text", "") for item in rich_text_array)
     
-    def _show_skipped_properties_summary(self) -> None:
-        """Show summary of properties that were not migrated."""
-        if not self.skipped_properties:
-            return
-        
-        self.progress.log(f"\nℹ️ Skipped Properties (unsupported by Notion API):")
-        self.progress.log("=" * 70)
-        
-        # Group by type (formula vs rollup)
-        from collections import defaultdict
-        by_type = defaultdict(list)
-        for prop in self.skipped_properties:
-            prop_type = prop["type"]
-            if prop_type in ["formula", "rollup"]:
-                by_type[prop_type].append(prop)
-            else:
-                by_type["unsupported"].append(prop)
-        
-        # Show formulas grouped by Notion database
-        if "formula" in by_type:
-            self.progress.log("Formula properties:")
-            # Group by original database name, not table name
-            by_db = defaultdict(list)
-            for prop in by_type["formula"]:
-                # Get original database name from stored data
-                original_db_name = prop.get("original_db_name", prop["table"])
-                db_id = prop.get("db_id", "unknown")
-                by_db[original_db_name].append({"property": prop["property"], "db_id": db_id})
-            
-            for db_name, prop_data in by_db.items():
-                # Get the database ID from the first property (they're all from the same DB)
-                db_id = prop_data[0]["db_id"]
-                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
-                for prop_info in prop_data:
-                    self.progress.log(f"  - Field: '{prop_info['property']}'")
-            self.progress.log("")
-        
-        # Show rollups grouped by Notion database
-        if "rollup" in by_type:
-            self.progress.log("Rollup properties:")
-            by_db = defaultdict(list)
-            for prop in by_type["rollup"]:
-                # Get original database name from stored data
-                original_db_name = prop.get("original_db_name", prop["table"])
-                db_id = prop.get("db_id", "unknown")
-                by_db[original_db_name].append({"property": prop["property"], "db_id": db_id})
-            
-            for db_name, prop_data in by_db.items():
-                # Get the database ID from the first property (they're all from the same DB)
-                db_id = prop_data[0]["db_id"]
-                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
-                for prop_info in prop_data:
-                    self.progress.log(f"  - Field: '{prop_info['property']}'")
-            self.progress.log("")
-        
-        # Show unsupported
-        if "unsupported" in by_type:
-            self.progress.log("Unsupported properties:")
-            by_db = defaultdict(list)
-            for prop in by_type["unsupported"]:
-                original_db_name = prop.get("original_db_name", prop["table"])
-                by_db[original_db_name].append(f"{prop['property']} ({prop['type']})")
-            
-            for db_name, props in by_db.items():
-                # Need to get the database ID for this section too
-                # Find a property from this database to get the ID
-                db_id = "unknown"
-                for skipped_prop in by_type["unsupported"]:
-                    if skipped_prop.get("original_db_name") == db_name:
-                        db_id = skipped_prop.get("db_id", "unknown")
-                        break
-                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
-                for prop in props:
-                    self.progress.log(f"  - Field: '{prop}'")
-            self.progress.log("")
-        
-        total_skipped = len(self.skipped_properties)
-    
+
     def _add_select_foreign_keys(self, table_name: str, properties: Dict) -> None:
         """Add foreign key constraints from main table select fields to option tables."""
         
@@ -810,7 +838,7 @@ class NotionMigrator:
         if not self.embedded_databases:
             return
         
-        self.progress.log(f"\nℹ️ Table(s) embedded in pages, but not found:")
+        self.progress.log(f"\nℹ️ Found table(s) embedded as additional content, but source table(s) not found:")
         self.progress.log("=" * 70)
         
         # Group by migrated status
