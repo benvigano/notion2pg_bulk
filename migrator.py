@@ -163,19 +163,9 @@ class NotionMigrator:
         
         self.progress.log(f"Found {len(databases)} databases")
         
-        # TEMPORARY: Filter for specific databases only
-        allowed_databases = ["Data", "Backups", "Automations", "Cloud spaces", "Cloud providers", "External drives"]
-        filtered_databases = []
-        for db in databases:
-            db_title = self._extract_database_title(db)
-            if db_title in allowed_databases:
-                filtered_databases.append(db)
-        
-        self.progress.log(f"Filtered to {len(filtered_databases)} allowed databases: {', '.join(allowed_databases)}")
-        
         # Get detailed schema for each database
         detailed_databases = []
-        for i, db in enumerate(filtered_databases, 1):
+        for i, db in enumerate(databases, 1):
             db_id = db["id"]
             db_title = self._extract_database_title(db)
             
@@ -188,8 +178,8 @@ class NotionMigrator:
             request_count += 1
             self.progress.update(1)
             self.progress.set_postfix(
-                found=len(filtered_databases), 
-                details=f"{i}/{len(filtered_databases)}", 
+                found=len(databases), 
+                details=f"{i}/{len(databases)}", 
                 requests=request_count
             )
             
