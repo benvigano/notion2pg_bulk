@@ -356,7 +356,7 @@ class NotionMigrator:
                 option_table_name,
                 self.metadata,
                 Column("id", String(36), primary_key=True),
-                Column("value", String(255), nullable=False),
+                Column("value", String(255), nullable=False, unique=True),
                 Column("color", String(50)),
                 schema='select_options'
             )
@@ -410,6 +410,9 @@ class NotionMigrator:
         
         # Populate lookup tables
         self._populate_lookup_tables(table.name, properties)
+        
+        # Add foreign key constraints after data is populated
+        self._add_select_foreign_keys(table.name, properties)
     
     def _insert_pages_batch(self, table: Table, pages: List[Dict], properties: Dict) -> None:
         """Insert a batch of pages into the PostgreSQL table."""
@@ -683,3 +686,52 @@ class NotionMigrator:
             self.progress.log("   Consider recreating them as PostgreSQL views or computed columns")
         
         self.progress.log("=" * 70)
+    
+    def _add_select_foreign_keys(self, table_name: str, properties: Dict) -> None:
+        """Add foreign key constraints from main table select fields to option tables."""
+        
+        for prop_name, prop_config in properties.items():
+            if not self.property_mapper.needs_lookup_table(prop_config):
+                continue
+                
+            prop_type = prop_config.get("type")
+            clean_prop_name = self._clean_table_name(prop_name)
+            option_table_name = self.property_mapper.get_lookup_table_name(table_name, prop_name)
+            
+            # Use separate transaction for each constraint to avoid rollback issues
+            try:
+                with self.db_engine.connect() as conn:
+                    if prop_type == "select":
+                        # For single select: direct foreign key
+                        constraint_name = f"fk_{table_name}_{clean_prop_name}"
+                        sql = f"""
+                        ALTER TABLE content.{table_name} 
+                        ADD CONSTRAINT {constraint_name}
+                        FOREIGN KEY ({clean_prop_name}) 
+                        REFERENCES select_options.{option_table_name}(value)
+                        ON DELETE SET NULL
+                        """
+                        conn.execute(text(sql))
+                        conn.commit()
+                        
+                    elif prop_type == "multi_select":
+                        # For multi-select: check constraint that validates array elements
+                        constraint_name = f"fk_{table_name}_{clean_prop_name}_check"
+                        sql = f"""
+                        ALTER TABLE content.{table_name} 
+                        ADD CONSTRAINT {constraint_name}
+                        CHECK (
+                            {clean_prop_name} IS NULL OR 
+                            (SELECT COUNT(*) 
+                             FROM unnest({clean_prop_name}) AS option_value 
+                             WHERE option_value NOT IN (
+                                 SELECT value FROM select_options.{option_table_name}
+                             )) = 0
+                        )
+                        """
+                        conn.execute(text(sql))
+                        conn.commit()
+                    
+            except Exception as e:
+                self.progress.log(f"⚠️  Failed to create foreign key for {table_name}.{clean_prop_name}: {e}")
+                # Continue with next constraint even if this one fails
