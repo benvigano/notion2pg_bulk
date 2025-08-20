@@ -30,7 +30,8 @@ def main():
     migrator = NotionMigrator(
         notion_token=notion_token,
         db_connection=engine,
-        verbose=True
+        verbose=True,
+        extract_page_content=False  # Set to True to extract free-form page content (slower)
     )
     
     # Run migration

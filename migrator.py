@@ -23,7 +23,8 @@ except ImportError:
 class NotionMigrator:
     """Main class for migrating Notion workspace to PostgreSQL."""
     
-    def __init__(self, notion_token: str, db_connection: Engine, verbose: bool = True):
+    def __init__(self, notion_token: str, db_connection: Engine, verbose: bool = True, 
+                 extract_page_content: bool = False):
         """
         Initialize the migrator.
         
@@ -31,10 +32,12 @@ class NotionMigrator:
             notion_token: Notion integration token
             db_connection: SQLAlchemy engine for PostgreSQL connection
             verbose: Enable verbose output with progress bars
+            extract_page_content: Extract free-form content from page bodies (slower migration)
         """
         self.notion = Client(auth=notion_token)
         self.db_engine = db_connection
         self.verbose = verbose
+        self.extract_page_content = extract_page_content
         self.progress = ProgressTracker(verbose)
         self.rate_limiter = RateLimiter(requests_per_second=2.5)
         self.metadata = MetaData()
@@ -43,6 +46,9 @@ class NotionMigrator:
         # Track created tables and lookup tables
         self.created_tables: Dict[str, Table] = {}
         self.lookup_tables: Dict[str, Table] = {}
+        
+        # Track skipped properties for summary
+        self.skipped_properties: List[Dict[str, str]] = []
     
     def run(self) -> None:
         """Run the complete migration process."""
@@ -86,6 +92,9 @@ class NotionMigrator:
             # Phase 4: Validate relations
             self.progress.log("\n🔍 Validating relation references...")
             self._validate_relations()
+            
+            # Phase 5: Show summary of skipped properties
+            self._show_skipped_properties_summary()
             
             self.progress.log("✅ Migration completed successfully!")
             
@@ -293,15 +302,39 @@ class NotionMigrator:
         lookup_table_configs = []
         
         # Add notion_id as primary key
-        from sqlalchemy import Column, String
+        from sqlalchemy import Column, String, Text
         columns.append(Column("notion_id", String(36), primary_key=True))
         
+        # Add page_content column if feature is enabled
+        if self.extract_page_content:
+            columns.append(Column("page_content", Text, comment="Free-form content from the bottom of the Notion page"))
+        
         for prop_name, prop_config in properties.items():
+            prop_type = prop_config.get("type")
+            
+            # Track skipped properties for summary
+            if prop_type in ["formula", "rollup"]:
+                self.skipped_properties.append({
+                    "table": table_name,
+                    "property": prop_name,
+                    "type": prop_type,
+                    "reason": "Computed property - values are derived from other data"
+                })
+                continue
+            
             # Clean property name for SQL compatibility
             clean_prop_name = self._clean_table_name(prop_name)
             column = self.property_mapper.get_postgres_column(clean_prop_name, prop_config)
             if column is not None:
                 columns.append(column)
+            else:
+                # Track unsupported property types
+                self.skipped_properties.append({
+                    "table": table_name,
+                    "property": prop_name,
+                    "type": prop_type,
+                    "reason": "Unsupported property type"
+                })
             
             # Track multi-select properties for lookup tables
             if self.property_mapper.needs_lookup_table(prop_config):
@@ -387,6 +420,7 @@ class NotionMigrator:
         for page in pages:
             row_data = {"notion_id": page["id"]}
             
+            # Extract page properties
             page_properties = page.get("properties", {})
             for prop_name, prop_config in properties.items():
                 if prop_config.get("type") in ["formula", "rollup"]:
@@ -399,6 +433,11 @@ class NotionMigrator:
                     prop_data, prop_config["type"]
                 )
                 row_data[clean_prop_name] = value
+            
+            # Extract page content (blocks below properties) if feature is enabled
+            if self.extract_page_content:
+                page_content = self._extract_page_content(page["id"])
+                row_data["page_content"] = page_content
             
             rows.append(row_data)
         
@@ -530,3 +569,117 @@ class NotionMigrator:
             return None
         except:
             return None
+    
+    def _extract_page_content(self, page_id: str) -> str:
+        """Extract text content from page blocks below database properties."""
+        try:
+            # Get all blocks for this page
+            blocks = []
+            start_cursor = None
+            
+            while True:
+                response = self.rate_limiter.rate_limited_call(
+                    self.notion.blocks.children.list,
+                    block_id=page_id,
+                    start_cursor=start_cursor,
+                    page_size=100
+                )
+                
+                blocks.extend(response.get("results", []))
+                
+                if not response.get("has_more", False):
+                    break
+                start_cursor = response.get("next_cursor")
+            
+            # Extract text from blocks
+            if not blocks:
+                return ""
+            
+            text_content = []
+            for block in blocks:
+                block_text = self._extract_block_text(block)
+                if block_text.strip():
+                    text_content.append(block_text)
+            
+            return "\n\n".join(text_content) if text_content else ""
+            
+        except Exception as e:
+            # If we can't get page content, just return empty string
+            # This prevents the migration from failing due to page content issues
+            return ""
+    
+    def _extract_block_text(self, block: Dict[str, Any]) -> str:
+        """Extract plain text from a Notion block."""
+        block_type = block.get("type", "")
+        block_data = block.get(block_type, {})
+        
+        # Handle different block types that contain text
+        if block_type in ["paragraph", "heading_1", "heading_2", "heading_3", 
+                         "bulleted_list_item", "numbered_list_item", "quote", 
+                         "callout", "toggle"]:
+            rich_text = block_data.get("rich_text", [])
+            return self._extract_rich_text_plain(rich_text)
+        
+        elif block_type == "code":
+            rich_text = block_data.get("rich_text", [])
+            language = block_data.get("language", "")
+            code_text = self._extract_rich_text_plain(rich_text)
+            return f"```{language}\n{code_text}\n```" if code_text else ""
+        
+        elif block_type == "to_do":
+            rich_text = block_data.get("rich_text", [])
+            checked = block_data.get("checked", False)
+            text = self._extract_rich_text_plain(rich_text)
+            checkbox = "☑" if checked else "☐"
+            return f"{checkbox} {text}" if text else ""
+        
+        elif block_type == "divider":
+            return "---"
+        
+        # For blocks we don't handle, return empty string
+        return ""
+    
+    def _extract_rich_text_plain(self, rich_text_array: List[Dict]) -> str:
+        """Extract plain text from Notion rich text array."""
+        if not rich_text_array:
+            return ""
+        return "".join(item.get("plain_text", "") for item in rich_text_array)
+    
+    def _show_skipped_properties_summary(self) -> None:
+        """Show summary of properties that were not migrated."""
+        if not self.skipped_properties:
+            self.progress.log("✅ All supported properties were migrated successfully")
+            return
+        
+        self.progress.log(f"\n📋 Migration Summary - Skipped Properties:")
+        self.progress.log("=" * 70)
+        
+        # Group by reason for cleaner output
+        from collections import defaultdict
+        by_reason = defaultdict(list)
+        for prop in self.skipped_properties:
+            by_reason[prop["reason"]].append(prop)
+        
+        for reason, props in by_reason.items():
+            self.progress.log(f"🚫 {reason}:")
+            
+            # Group by table for even cleaner output
+            by_table = defaultdict(list)
+            for prop in props:
+                by_table[prop["table"]].append(prop)
+            
+            for table, table_props in by_table.items():
+                prop_list = [f"{p['property']} ({p['type']})" for p in table_props]
+                self.progress.log(f"   📊 {table}: {', '.join(prop_list)}")
+            self.progress.log("")
+        
+        total_skipped = len(self.skipped_properties)
+        unique_tables = len(set(p["table"] for p in self.skipped_properties))
+        
+        self.progress.log(f"📊 Total: {total_skipped} properties skipped across {unique_tables} tables")
+        
+        if any(p["type"] in ["formula", "rollup"] for p in self.skipped_properties):
+            self.progress.log("💡 Note: Formula and rollup values change dynamically in Notion")
+            self.progress.log("   Consider recreating them as PostgreSQL views or computed columns")
+        
+        self.progress.log("=" * 70)
