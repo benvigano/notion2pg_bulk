@@ -49,6 +49,9 @@ class NotionMigrator:
         
         # Track skipped properties for summary
         self.skipped_properties: List[Dict[str, str]] = []
+        
+        # Track embedded databases found in page content
+        self.embedded_databases: List[Dict[str, str]] = []
     
     def run(self) -> None:
         """Run the complete migration process."""
@@ -95,6 +98,10 @@ class NotionMigrator:
             
             # Phase 5: Show summary of skipped properties
             self._show_skipped_properties_summary()
+            
+            # Phase 6: Show embedded database summary
+            if self.extract_page_content:
+                self._show_embedded_databases_summary()
             
             self.progress.log("✅ Migration completed successfully!")
             
@@ -382,6 +389,9 @@ class NotionMigrator:
         details = db_info["details"]
         properties = details["properties"]
         
+        # Set current table context for embedded database tracking
+        self._current_table_name = table.name
+        
         # Query all pages in the database
         start_cursor = None
         total_pages = 0
@@ -576,6 +586,9 @@ class NotionMigrator:
     def _extract_page_content(self, page_id: str) -> str:
         """Extract text content from page blocks below database properties."""
         try:
+            # Set current context for embedded database tracking
+            self._current_page_id = page_id
+            
             # Get all blocks for this page
             blocks = []
             start_cursor = None
@@ -638,6 +651,26 @@ class NotionMigrator:
         
         elif block_type == "divider":
             return "---"
+        
+        elif block_type == "child_database":
+            # Handle embedded databases
+            database_id = block.get("id", "")
+            title = block_data.get("title", "Embedded Database")
+            
+            # Track this embedded database
+            self.embedded_databases.append({
+                "database_id": database_id,
+                "title": title,
+                "parent_table": getattr(self, '_current_table_name', 'unknown'),
+                "migrated": database_id in self.created_tables
+            })
+            
+            # Return reference to PostgreSQL table if migrated
+            if database_id in self.created_tables:
+                table_name = self._clean_table_name(title)
+                return f"[Embedded Database: {title} → PostgreSQL table: content.{table_name}]"
+            else:
+                return f"[Embedded Database: {title} (ID: {database_id[:8]}...) - Not migrated]"
         
         # For blocks we don't handle, return empty string
         return ""
@@ -735,3 +768,42 @@ class NotionMigrator:
             except Exception as e:
                 self.progress.log(f"⚠️  Failed to create foreign key for {table_name}.{clean_prop_name}: {e}")
                 # Continue with next constraint even if this one fails
+    
+    def _show_embedded_databases_summary(self) -> None:
+        """Show summary of embedded databases found in page content."""
+        if not self.embedded_databases:
+            self.progress.log("📋 No embedded databases found in page content")
+            return
+        
+        self.progress.log(f"\n📊 Embedded Databases Found in Page Content:")
+        self.progress.log("=" * 70)
+        
+        # Group by migrated status
+        migrated = [db for db in self.embedded_databases if db["migrated"]]
+        not_migrated = [db for db in self.embedded_databases if not db["migrated"]]
+        
+        if migrated:
+            self.progress.log("✅ Successfully Referenced (migrated to PostgreSQL):")
+            for db in migrated:
+                table_name = self._clean_table_name(db["title"])
+                self.progress.log(f"   📊 {db['title']} → content.{table_name}")
+                self.progress.log(f"      Found in: {db['parent_table']}")
+            self.progress.log("")
+        
+        if not_migrated:
+            self.progress.log("⚠️  Not Migrated (references preserved but not accessible):")
+            for db in not_migrated:
+                self.progress.log(f"   📋 {db['title']} (ID: {db['database_id'][:8]}...)")
+                self.progress.log(f"      Found in: {db['parent_table']}")
+                self.progress.log(f"      Reason: Database not shared with integration or not in migration scope")
+            self.progress.log("")
+            
+            self.progress.log("💡 To migrate these databases:")
+            self.progress.log("   1. Share them with your Notion integration")
+            self.progress.log("   2. Add them to your migration scope")
+            self.progress.log("   3. Re-run the migration")
+        
+        total_embedded = len(self.embedded_databases)
+        migrated_count = len(migrated)
+        self.progress.log(f"📊 Total: {total_embedded} embedded databases found, {migrated_count} migrated")
+        self.progress.log("=" * 70)
