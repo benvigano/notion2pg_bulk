@@ -305,9 +305,9 @@ class NotionMigrator:
         from sqlalchemy import Column, String, Text
         columns.append(Column("notion_id", String(36), primary_key=True))
         
-        # Add page_content column if feature is enabled
+        # Add additional_page_content column if feature is enabled
         if self.extract_page_content:
-            columns.append(Column("page_content", Text, comment="Free-form content from the bottom of the Notion page"))
+            columns.append(Column("additional_page_content", Text, comment="Free-form content from the bottom of the Notion page"))
         
         for prop_name, prop_config in properties.items():
             prop_type = prop_config.get("type")
@@ -440,7 +440,7 @@ class NotionMigrator:
             # Extract page content (blocks below properties) if feature is enabled
             if self.extract_page_content:
                 page_content = self._extract_page_content(page["id"])
-                row_data["page_content"] = page_content
+                row_data["additional_page_content"] = page_content
             
             rows.append(row_data)
         
