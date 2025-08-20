@@ -43,6 +43,9 @@ class NotionMigrator:
         self.metadata = MetaData()
         self.property_mapper = NotionPropertyMapper()
         
+        # Test database connection during initialization
+        self._test_database_connection()
+        
         # Track created tables and lookup tables
         self.created_tables: Dict[str, Table] = {}
         self.lookup_tables: Dict[str, Table] = {}
@@ -56,7 +59,7 @@ class NotionMigrator:
     def run(self) -> None:
         """Run the complete migration process."""
         try:
-            # Check database connection and schemas
+            # Check database schemas and test Notion connection
             self._check_clean_database()
             self._test_notion_connection()
             
@@ -129,6 +132,16 @@ class NotionMigrator:
                     "DROP SCHEMA content CASCADE;\n"
                     "DROP SCHEMA select_options CASCADE;"
                 )
+    
+    def _test_database_connection(self) -> None:
+        """Test PostgreSQL database connection."""
+        try:
+            with self.db_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            if self.verbose:
+                self.progress.log("🔗 Connected to PostgreSQL database successfully")
+        except Exception as e:
+            raise ValueError(f"Failed to connect to PostgreSQL database: {e}")
     
     def _test_notion_connection(self) -> None:
         """Test Notion API connection."""

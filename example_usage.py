@@ -20,12 +20,6 @@ def main():
     # Create database connection
     engine = sa.create_engine(db_url)
     
-    # Test connection
-    with engine.connect() as conn:
-        conn.execute(sa.text("SELECT 1"))
-    
-    print("✅ Connected to database successfully")
-    
     # Initialize migrator
     migrator = NotionMigrator(
         notion_token=notion_token,
