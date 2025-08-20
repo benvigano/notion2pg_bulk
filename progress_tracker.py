@@ -33,7 +33,7 @@ class ProgressTracker:
                 total=total,
                 desc=description,
                 unit="items",
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+                bar_format="{l_bar}{bar} | {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
             )
     
     def update(self, n: int = 1) -> None:

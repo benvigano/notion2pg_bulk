@@ -56,18 +56,17 @@ class NotionMigrator:
     def run(self) -> None:
         """Run the complete migration process."""
         try:
-            self.progress.log("🚀 Starting Notion workspace migration to PostgreSQL...")
-            
-            # Check if schemas already exist
+            # Check database connection and schemas
             self._check_clean_database()
+            self._test_notion_connection()
             
-            # Phase 1: Discover databases
-            self.progress.start_phase("🔍 Discovering databases", None)
+            # Phase 1: Discover Notion databases
+            self.progress.start_phase("🔎 Discovering Notion databases", None)
             databases = self._get_databases()
             self.progress.finish_phase()
             
             if not databases:
-                self.progress.log("❌ No databases found. Please share databases with your integration.")
+                self.progress.log("No Notion databases found. Please share databases with your integration.")
                 return
             
             # Show migration plan
@@ -78,32 +77,31 @@ class NotionMigrator:
                 self.progress.log("Migration cancelled by user.")
                 return
             
-            # Phase 2: Create schema
-            self.progress.start_phase("🏗️  Creating database schema", len(databases))
+            # Phase 2: Create PostgreSQL schema
+            self.progress.start_phase("Creating PostgreSQL schema", len(databases))
             for db_info in databases:
                 self._create_table_schema(db_info)
                 self.progress.update(1)
             self.progress.finish_phase()
             
             # Phase 3: Migrate data
-            self.progress.start_phase("📊 Migrating data", len(databases))
+            self.progress.start_phase("Migrating data", len(databases))
             for db_info in databases:
                 self._migrate_database_data(db_info)
                 self.progress.update(1)
             self.progress.finish_phase()
             
-            # Phase 4: Validate relations
-            self.progress.log("\n🔍 Validating relation references...")
-            self._validate_relations()
+            self.progress.log("✅ Migration completed successfully")
             
-            # Phase 5: Show summary of skipped properties
+            # Phase 4: Show post-migration analysis
+            self.progress.log("\n" + "=" * 70)
+            self.progress.log("POST-MIGRATION ANALYSIS")
+            self.progress.log("=" * 70)
+            
             self._show_skipped_properties_summary()
-            
-            # Phase 6: Show embedded database summary
+            self._validate_relations()
             if self.extract_page_content:
                 self._show_embedded_databases_summary()
-            
-            self.progress.log("✅ Migration completed successfully!")
             
         finally:
             self.progress.cleanup()
@@ -117,7 +115,7 @@ class NotionMigrator:
             ))
             if result.fetchone():
                 raise ValueError(
-                    "❌ Schema 'content' already exists. "
+                    "Schema 'content' already exists. "
                     "Please drop existing schemas or use a clean database:\n"
                     "DROP SCHEMA content CASCADE;\n"
                     "DROP SCHEMA select_options CASCADE;"
@@ -129,13 +127,19 @@ class NotionMigrator:
             ))
             if result.fetchone():
                 raise ValueError(
-                    "❌ Schema 'select_options' already exists. "
+                    "Schema 'select_options' already exists. "
                     "Please drop existing schemas or use a clean database:\n"
                     "DROP SCHEMA content CASCADE;\n"
                     "DROP SCHEMA select_options CASCADE;"
                 )
-            
-            self.progress.log("✅ Database is clean - no conflicting schemas found")
+    
+    def _test_notion_connection(self) -> None:
+        """Test Notion API connection."""
+        try:
+            self.rate_limiter.rate_limited_call(self.notion.users.me)
+            self.progress.log("🔗 Successfully connected to Notion API")
+        except Exception as e:
+            raise ValueError(f"Failed to connect to Notion API: {e}")
     
     def _get_databases(self) -> List[Dict[str, Any]]:
         """Get all accessible databases with their detailed schemas."""
@@ -160,8 +164,6 @@ class NotionMigrator:
             if not response.get("has_more", False):
                 break
             start_cursor = response.get("next_cursor")
-        
-        self.progress.log(f"Found {len(databases)} databases")
         
         # Get detailed schema for each database
         detailed_databases = []
@@ -204,9 +206,9 @@ class NotionMigrator:
     
     def _show_migration_plan(self, databases: List[Dict]) -> None:
         """Show what will be migrated."""
-        self.progress.log(f"\n📋 Migration Plan:")
+        self.progress.log(f"\nMigration Plan:")
         self.progress.log("=" * 70)
-        self.progress.log(f"Databases to migrate: {len(databases)}")
+        self.progress.log(f"\nNotion databases to migrate: {len(databases)}")
         self.progress.log("")
         
         # Prepare data for dataframe
@@ -241,25 +243,25 @@ class NotionMigrator:
                 option_table_names.append(f"select_options.{table_name}__{clean_field_name}")
             
             data.append({
-                "Database": title,
-                "Table Name": table_name,
+                "Notion Database": f"'{title}'",
+                "Destination Table": f"'{table_name}'",
                 "Properties": property_count,
                 "Relations": relation_count,
-                "Select Option Tables": option_tables_count,
-                "Option Table Names": ", ".join(option_table_names) if option_table_names else "-"
+                "Select Options Tables": option_tables_count,
+                "Option Table Names": ", ".join([f"'{name}'" for name in option_table_names]) if option_table_names else "-"
             })
         
         # Create pretty table
-        headers = ["Database", "Table Name", "Properties", "Relations", "Select Option Tables", "Option Table Names"]
+        headers = ["Notion Database", "Destination Table", "Properties", "Relations", "Select Options Tables", "Option Table Names"]
         table_data = []
         
         for row in data:
             table_data.append([
-                row["Database"],
-                row["Table Name"], 
+                row["Notion Database"],
+                row["Destination Table"], 
                 row["Properties"],
                 row["Relations"],
-                row["Select Option Tables"],
+                row["Select Options Tables"],
                 row["Option Table Names"]
             ])
         
@@ -313,9 +315,11 @@ class NotionMigrator:
             if prop_type in ["formula", "rollup"]:
                 self.skipped_properties.append({
                     "table": table_name,
-                    "property": prop_name,
+                    "property": prop_name,  # Keep original property name
                     "type": prop_type,
-                    "reason": "Computed property - values are derived from other data"
+                    "reason": "Computed property - values are derived from other data",
+                    "original_db_name": title,  # Store original database name
+                    "db_id": db_id  # Store database ID
                 })
                 continue
             
@@ -328,9 +332,11 @@ class NotionMigrator:
                 # Track unsupported property types
                 self.skipped_properties.append({
                     "table": table_name,
-                    "property": prop_name,
+                    "property": prop_name,  # Keep original property name
                     "type": prop_type,
-                    "reason": "Unsupported property type"
+                    "reason": "Unsupported property type",
+                    "original_db_name": title,  # Store original database name
+                    "db_id": db_id  # Store database ID
                 })
             
             # Track multi-select properties for lookup tables
@@ -381,6 +387,7 @@ class NotionMigrator:
         
         # Set current table context for embedded database tracking
         self._current_table_name = table.name
+        self._current_table_original_name = db_info["title"]  # Track original name
         
         # Query all pages in the database
         start_cursor = None
@@ -513,6 +520,7 @@ class NotionMigrator:
                 continue
                 
             table_name = self._clean_table_name(db_info["title"])
+            original_table_name = db_info["title"]  # Keep original name
             properties = db_info["details"]["properties"]
             
             # Find relation properties
@@ -528,14 +536,16 @@ class NotionMigrator:
                             target_db_name = self._get_database_name_by_id(target_db_id)
                             issues.append({
                                 "source_table": table_name,
-                                "source_field": self._clean_table_name(prop_name),
+                                "source_field": prop_name,  # Use original field name
+                                "source_table_original": original_table_name,  # Store original table name
+                                "source_db_id": db_id,
                                 "target_db_name": target_db_name or f"Unknown ({target_db_id[:8]}...)",
                                 "target_db_id": target_db_id
                             })
         
-        # Report results
+        # Report results only if there are issues
         if issues:
-            self.progress.log("⚠️  Found relation references to tables not in migration scope:")
+            self.progress.log("\nℹ️ Table(s) referenced in relation properties, but not found:")
             self.progress.log("=" * 70)
             
             # Group by target database for cleaner output
@@ -545,18 +555,13 @@ class NotionMigrator:
                 by_target[issue["target_db_name"]].append(issue)
             
             for target_name, target_issues in by_target.items():
-                self.progress.log(f"📋 Target: {target_name}")
+                target_db_id = target_issues[0]["target_db_id"]
+                self.progress.log(f"- Table: '{target_name}' ({target_db_id})")
+                self.progress.log("  - Referenced by:")
                 for issue in target_issues:
-                    self.progress.log(f"   ↳ {issue['source_table']}.{issue['source_field']}")
+                    self.progress.log(f"    - Field: '{issue['source_field']}' of table '{issue['source_table_original']}' ({issue['source_db_id']})")
                 self.progress.log("")
-            
-            self.progress.log(f"💡 To fix: Share these {len(by_target)} databases with your Notion integration")
-            self.progress.log("   or remove the relation fields from the migration scope.")
-            self.progress.log("=" * 70)
-        else:
-            self.progress.log("✅ All relation references are valid (within migration scope)")
-        
-        self.progress.log(f"📊 Summary: {total_relations} relation fields checked, {len(issues)} issues found")
+
     
     def _get_database_name_by_id(self, db_id: str) -> str:
         """Get database name by ID from the original discovery results."""
@@ -652,6 +657,8 @@ class NotionMigrator:
                 "database_id": database_id,
                 "title": title,
                 "parent_table": getattr(self, '_current_table_name', 'unknown'),
+                "parent_table_original": getattr(self, '_current_table_original_name', 'unknown'),
+                "page_id": getattr(self, '_current_page_id', 'unknown'),
                 "migrated": database_id in self.created_tables
             })
             
@@ -674,41 +681,80 @@ class NotionMigrator:
     def _show_skipped_properties_summary(self) -> None:
         """Show summary of properties that were not migrated."""
         if not self.skipped_properties:
-            self.progress.log("✅ All supported properties were migrated successfully")
             return
         
-        self.progress.log(f"\n📋 Migration Summary - Skipped Properties:")
+        self.progress.log(f"\nℹ️ Skipped Properties (unsupported by Notion API):")
         self.progress.log("=" * 70)
         
-        # Group by reason for cleaner output
+        # Group by type (formula vs rollup)
         from collections import defaultdict
-        by_reason = defaultdict(list)
+        by_type = defaultdict(list)
         for prop in self.skipped_properties:
-            by_reason[prop["reason"]].append(prop)
+            prop_type = prop["type"]
+            if prop_type in ["formula", "rollup"]:
+                by_type[prop_type].append(prop)
+            else:
+                by_type["unsupported"].append(prop)
         
-        for reason, props in by_reason.items():
-            self.progress.log(f"🚫 {reason}:")
+        # Show formulas grouped by Notion database
+        if "formula" in by_type:
+            self.progress.log("Formula properties:")
+            # Group by original database name, not table name
+            by_db = defaultdict(list)
+            for prop in by_type["formula"]:
+                # Get original database name from stored data
+                original_db_name = prop.get("original_db_name", prop["table"])
+                db_id = prop.get("db_id", "unknown")
+                by_db[original_db_name].append({"property": prop["property"], "db_id": db_id})
             
-            # Group by table for even cleaner output
-            by_table = defaultdict(list)
-            for prop in props:
-                by_table[prop["table"]].append(prop)
+            for db_name, prop_data in by_db.items():
+                # Get the database ID from the first property (they're all from the same DB)
+                db_id = prop_data[0]["db_id"]
+                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
+                for prop_info in prop_data:
+                    self.progress.log(f"  - Field: '{prop_info['property']}'")
+            self.progress.log("")
+        
+        # Show rollups grouped by Notion database
+        if "rollup" in by_type:
+            self.progress.log("Rollup properties:")
+            by_db = defaultdict(list)
+            for prop in by_type["rollup"]:
+                # Get original database name from stored data
+                original_db_name = prop.get("original_db_name", prop["table"])
+                db_id = prop.get("db_id", "unknown")
+                by_db[original_db_name].append({"property": prop["property"], "db_id": db_id})
             
-            for table, table_props in by_table.items():
-                prop_list = [f"{p['property']} ({p['type']})" for p in table_props]
-                self.progress.log(f"   📊 {table}: {', '.join(prop_list)}")
+            for db_name, prop_data in by_db.items():
+                # Get the database ID from the first property (they're all from the same DB)
+                db_id = prop_data[0]["db_id"]
+                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
+                for prop_info in prop_data:
+                    self.progress.log(f"  - Field: '{prop_info['property']}'")
+            self.progress.log("")
+        
+        # Show unsupported
+        if "unsupported" in by_type:
+            self.progress.log("Unsupported properties:")
+            by_db = defaultdict(list)
+            for prop in by_type["unsupported"]:
+                original_db_name = prop.get("original_db_name", prop["table"])
+                by_db[original_db_name].append(f"{prop['property']} ({prop['type']})")
+            
+            for db_name, props in by_db.items():
+                # Need to get the database ID for this section too
+                # Find a property from this database to get the ID
+                db_id = "unknown"
+                for skipped_prop in by_type["unsupported"]:
+                    if skipped_prop.get("original_db_name") == db_name:
+                        db_id = skipped_prop.get("db_id", "unknown")
+                        break
+                self.progress.log(f"- From Table: '{db_name}' ({db_id})")
+                for prop in props:
+                    self.progress.log(f"  - Field: '{prop}'")
             self.progress.log("")
         
         total_skipped = len(self.skipped_properties)
-        unique_tables = len(set(p["table"] for p in self.skipped_properties))
-        
-        self.progress.log(f"📊 Total: {total_skipped} properties skipped across {unique_tables} tables")
-        
-        if any(p["type"] in ["formula", "rollup"] for p in self.skipped_properties):
-            self.progress.log("💡 Note: Formula and rollup values change dynamically in Notion")
-            self.progress.log("   Consider recreating them as PostgreSQL views or computed columns")
-        
-        self.progress.log("=" * 70)
     
     def _add_select_foreign_keys(self, table_name: str, properties: Dict) -> None:
         """Add foreign key constraints from main table select fields to option tables."""
@@ -762,38 +808,16 @@ class NotionMigrator:
     def _show_embedded_databases_summary(self) -> None:
         """Show summary of embedded databases found in page content."""
         if not self.embedded_databases:
-            self.progress.log("📋 No embedded databases found in page content")
             return
         
-        self.progress.log(f"\n📊 Embedded Databases Found in Page Content:")
+        self.progress.log(f"\nℹ️ Table(s) embedded in pages, but not found:")
         self.progress.log("=" * 70)
         
         # Group by migrated status
-        migrated = [db for db in self.embedded_databases if db["migrated"]]
         not_migrated = [db for db in self.embedded_databases if not db["migrated"]]
-        
-        if migrated:
-            self.progress.log("✅ Successfully Referenced (migrated to PostgreSQL):")
-            for db in migrated:
-                table_name = self._clean_table_name(db["title"])
-                self.progress.log(f"   📊 {db['title']} → content.{table_name}")
-                self.progress.log(f"      Found in: {db['parent_table']}")
-            self.progress.log("")
-        
+                
         if not_migrated:
-            self.progress.log("⚠️  Not Migrated (references preserved but not accessible):")
             for db in not_migrated:
-                self.progress.log(f"   📋 {db['title']} (ID: {db['database_id'][:8]}...)")
-                self.progress.log(f"      Found in: {db['parent_table']}")
-                self.progress.log(f"      Reason: Database not shared with integration or not in migration scope")
+                self.progress.log(f"- Table: '{db['title']}' ({db['database_id']})")
+                self.progress.log(f"  - Found in record {db.get('page_id', 'unknown')} of table '{db['parent_table_original']}'") 
             self.progress.log("")
-            
-            self.progress.log("💡 To migrate these databases:")
-            self.progress.log("   1. Share them with your Notion integration")
-            self.progress.log("   2. Add them to your migration scope")
-            self.progress.log("   3. Re-run the migration")
-        
-        total_embedded = len(self.embedded_databases)
-        migrated_count = len(migrated)
-        self.progress.log(f"📊 Total: {total_embedded} embedded databases found, {migrated_count} migrated")
-        self.progress.log("=" * 70)
