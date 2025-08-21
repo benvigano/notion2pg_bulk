@@ -2,134 +2,106 @@
 
 A Python package that performs a full migration of a Notion workspace to a PostgreSQL database.
 
-## Features
+- Automatically discovers and migrates **all databases in a workspace** regardless of their views or position in the page structure
+- Preserves **database and property descriptions**
+- Supports **relation properties** using PostgreSQL arrays
+- **Select field support**: Single and multi-select options stored in separate lookup tables with foreign key constraints
+- Complies with Notion API limits (3 requests/second average)
 
-- **Complete workspace migration**: Migrates all databases and their content
-- **Table and field descriptions**: Preserves database and property descriptions as PostgreSQL comments
-- **Relation field support**: Handles relation properties using PostgreSQL arrays
-- **Multi-select support**: Stores multi-select options in separate lookup tables
-- **Progress tracking**: Displays detailed progress bars during migration
-- **Rate limiting**: Automatically complies with Notion API rate limits
-- **Automatic discovery**: Finds all databases already shared with your integration
-
-## Prerequisites
+## Setup and Usage
 
 ### 1. Create a Notion Integration
 
 1. Go to [Notion Developers](https://www.notion.so/my-integrations)
 2. Click "New integration"
 3. Give it a name and select your workspace
-4. **Configure capabilities** (following least privilege principle):
-   - ✅ **Read content** - Required to read database schemas and data
-   - ✅ **Read comments** - Optional, for comment migration if needed
-   - ❌ **No user information** - Not needed for database migration
-   - ❌ **Insert content** - Not needed (we're only reading)
-   - ❌ **Update content** - Not needed (we're only reading)
+4. **Configure permissions** (following least privilege principle):
+   - **Read content** - Required to read database schemas and data
+   - **Read comments** - Required for property descriptions
+
 5. Copy the "Internal Integration Token"
 
-### 2. Share Databases with Integration
+### 2. Grant Database Access
 
-**Important**: Each database you want to migrate must be manually shared with your integration:
+**Option A: From Integration Page (faster for selecting all databases)**
+1. In your integration settings, go to "Access" tab
+2. Select databases singularly, or select all top-level pages to quickly grant access to all databases within them
 
+**Option B: GUI**
 1. Open each database in Notion
 2. Click the "..." menu in the top right
 3. Select "Add connections"
 4. Find and select your integration
-5. Click "Confirm"
 
-The migration tool will automatically discover all databases that have been shared with your integration.
-
-## Installation
-
+### 3. Install and Run
+**CLI:**
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-```
-
-No package installation needed! Just run the scripts directly.
-
-## Usage
-
-### Direct Script Usage (Recommended)
-
-```bash
-# Set environment variables (adjust variable names as needed)
-export NOTION_FULL_READONLY="your_notion_integration_token"
-export LOCAL_POSTGRES_URL="postgresql://user:password@localhost/dbname"
-
-# Run the example script
-python example_usage.py
-```
-
-### Command Line Interface
-
-```bash
-# Run CLI directly
 python cli.py --notion-token "your_token" --database-url "postgresql://..."
-
-# Or with environment variables
-export NOTION_TOKEN="your_notion_integration_token"
-export DATABASE_URL="postgresql://user:password@localhost/dbname"
-python cli.py
 ```
 
-### Python API (if imported as module)
-
+**Python API:**
 ```python
 from migrator import NotionMigrator
 import sqlalchemy as sa
 
-# Create database connection
 engine = sa.create_engine('postgresql://user:password@localhost/dbname')
-
-# Initialize migrator
 migrator = NotionMigrator(
     notion_token="your_notion_integration_token",
     db_connection=engine,
-    verbose=True  # Default: shows progress bars and detailed output
+    verbose=True
 )
-
-# Run migration
 migrator.run()
 ```
-
-## What Gets Migrated
-
-- **Database structure**: Each Notion database becomes a PostgreSQL table
-- **Property types**: Mapped to appropriate PostgreSQL column types
-- **Relations**: Stored as arrays of related record IDs
-- **Multi-select**: Options stored in separate `TABLENAME_FIELDNAME` tables
-- **Descriptions**: Database and property descriptions become PostgreSQL comments
-- **Data**: All database entries (pages) are migrated as table rows
 
 ## Property Type Mapping
 
 | Notion Property | PostgreSQL Type | Notes |
 |----------------|-----------------|-------|
-| Title | TEXT | Primary identifier |
-| Rich Text | TEXT | Formatted as plain text |
-| Number | NUMERIC | |
-| Select | TEXT | Single option value |
-| Multi-select | TEXT[] | Array of option values + lookup table |
-| Date | TIMESTAMP | |
-| Checkbox | BOOLEAN | |
-| URL | TEXT | |
-| Email | TEXT | |
-| Phone | TEXT | |
-| Relation | TEXT[] | Array of related page IDs |
-| People | TEXT[] | Array of user IDs |
-| Files | TEXT[] | Array of file URLs |
-| Created time | TIMESTAMP | |
-| Created by | TEXT | User ID |
-| Last edited time | TIMESTAMP | |
-| Last edited by | TEXT | User ID |
+| Title | `TEXT` | Primary identifier |
+| Rich Text | `TEXT` | Formatted as plain text |
+| Number | `NUMERIC` | |
+| Select | `TEXT` | Single option value + lookup table with foreign key |
+| Multi-select | `TEXT[]` | Array of option values + lookup table with check constraints |
+| Date | `TIMESTAMP` | |
+| Checkbox | `BOOLEAN` | |
+| URL | `TEXT` | |
+| Email | `TEXT` | |
+| Phone | `TEXT` | |
+| Relation | `TEXT[]` | Array of related page IDs |
+| People | `TEXT[]` | Array of user IDs |
+| Files | `TEXT[]` | Array of file URLs |
+| Created time | `TIMESTAMP` | |
+| Created by | `TEXT` | User ID |
+| Last edited time | `TIMESTAMP` | |
+| Last edited by | `TEXT` | User ID |
+| Formula | - | ⚠️ Skipped (not supported by Notion API) |
+| Rollup | - | ⚠️ Skipped (not supported by Notion API) |
 
-## Limitations
+## `additional_page_content`
 
-- **Formulas and Rollups**: Skipped (these are computed values)
-- **Database views**: Not migrated (focus on raw data)
-- **Page content**: Only database entries are migrated, not free-form pages
+The migrator can optionally extract free-form content from database pages. Extracted content is stored in the `additional_page_content` column as plain text.
 
-## Rate Limiting
+```python
+migrator = NotionMigrator(
+    notion_token=token,
+    db_connection=engine,
+    extract_page_content=True  # Default is false
+)
+```
 
-The tool automatically respects Notion's API rate limits (3 requests per second average) and handles HTTP 429 responses appropriately.
+**Supported blocks:**
+- Paragraph text
+- Headings (all levels)
+- Bulleted and numbered lists
+- Code blocks
+- To-do items
+- Callouts
+- Toggle blocks
+- Dividers
+- Embedded databases (ID reference only)
+
+**Unsupported blocks:**
+- Images and media files
+- Complex block types (equations, embeds, etc.)
+- Block formatting and styling
+- Page hierarchies and relationships
