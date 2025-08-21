@@ -134,3 +134,8 @@ migrator = NotionMigrator(
 - Complex block types (equations, embeds, etc.)
 - Block formatting and styling
 - Page hierarchies and relationships
+
+**Post-migration analysis:**
+When page content extraction is enabled, the migrator provides a comprehensive summary of:
+- Unsupported block types found and their locations (grouped by record)
+- Embedded databases that were referenced in page content but not connected to the integration (with full database IDs)

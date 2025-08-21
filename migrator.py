@@ -56,6 +56,9 @@ class NotionMigrator:
         
         # Track embedded databases found in page content
         self.embedded_databases: List[Dict[str, str]] = []
+        
+        # Track unsupported blocks found in page content
+        self.unsupported_blocks: List[Dict[str, str]] = []
     
     def run(self) -> None:
         """Run the complete migration process."""
@@ -100,12 +103,12 @@ class NotionMigrator:
             if self.interactive_mode:
                 self.progress.log("✅ Migration completed successfully")
                 
-                # Post-migration analysis (only embedded databases)
+                # Post-migration analysis (page content analysis)
                 if self.extract_page_content:
                     self.progress.log("\n" + "=" * 70)
                     self.progress.log("MIGRATION NOTES")
                     self.progress.log("=" * 70)
-                    self._show_embedded_databases_summary()
+                    self._show_page_content_analysis()
             
         finally:
             self.progress.cleanup()
@@ -813,8 +816,17 @@ class NotionMigrator:
             else:
                 return f"[Embedded Database: {title} (ID: {database_id}) - Not migrated]"
         
-        # For blocks we don't handle, return empty string
-        return ""
+        # For unsupported blocks, track them and return empty string
+        else:
+            # Track unsupported block types
+            self.unsupported_blocks.append({
+                "block_type": block_type,
+                "block_id": block.get("id", "unknown"),
+                "parent_table": getattr(self, '_current_table_name', 'unknown'),
+                "parent_table_original": getattr(self, '_current_table_original_name', 'unknown'),
+                "page_id": getattr(self, '_current_page_id', 'unknown')
+            })
+            return ""
     
     def _extract_rich_text_plain(self, rich_text_array: List[Dict]) -> str:
         """Extract plain text from Notion rich text array."""
@@ -872,19 +884,47 @@ class NotionMigrator:
                 self.progress.log(f"⚠️  Failed to create foreign key for {table_name}.{clean_prop_name}: {e}")
                 # Continue with next constraint even if this one fails
     
-    def _show_embedded_databases_summary(self) -> None:
-        """Show summary of embedded databases found in page content."""
-        if not self.embedded_databases:
+    def _show_page_content_analysis(self) -> None:
+        """Show comprehensive analysis of page content extraction results."""
+        has_unsupported_blocks = len(self.unsupported_blocks) > 0
+        has_embedded_databases = len(self.embedded_databases) > 0
+        
+        if not has_unsupported_blocks and not has_embedded_databases:
+            self.progress.log("✅ All page content blocks were successfully extracted")
             return
         
-        self.progress.log(f"\nℹ️ Found table(s) embedded as additional content, but source table(s) not found:")
-        self.progress.log("=" * 70)
+        # Show unsupported blocks summary
+        if has_unsupported_blocks:
+            self.progress.log(f"\nℹ️ Unsupported blocks found in page content:")
+            
+            # Group by record (page)
+            from collections import defaultdict
+            by_record = defaultdict(list)
+            for block in self.unsupported_blocks:
+                record_key = f"{block['parent_table_original']} - {block['page_id']}"
+                by_record[record_key].append(block)
+            
+            for record_key, blocks in by_record.items():
+                table_name, page_id = record_key.split(" - ", 1)
+                self.progress.log(f"- Record {page_id} of table '{table_name}':")
+                for block in blocks:
+                    self.progress.log(f"  - {block['block_type']} (ID: {block['block_id']})")
+                self.progress.log("")
+            
+            total_unsupported = len(self.unsupported_blocks)
+            self.progress.log(f"Total: {total_unsupported} unsupported blocks found")
+            self.progress.log("")
         
-        # Group by migrated status
+        # Show embedded databases summary (only unmigrated ones)
         not_migrated = [db for db in self.embedded_databases if not db["migrated"]]
-                
+        
         if not_migrated:
+            self.progress.log(f"\nℹ️ Embedded databases found in page content (not connected to integration):")
             for db in not_migrated:
-                self.progress.log(f"- Table: '{db['title']}' ({db['database_id']})")
-                self.progress.log(f"  - Found in record {db.get('page_id', 'unknown')} of table '{db['parent_table_original']}'") 
+                self.progress.log(f"- '{db['title']}' (ID: {db['database_id']})")
+                self.progress.log(f"  - Found in record {db.get('page_id', 'unknown')} of table '{db['parent_table_original']}'")
+            self.progress.log("")
+            
+            total_unmigrated = len(not_migrated)
+            self.progress.log(f"Total: {total_unmigrated} embedded databases not migrated")
             self.progress.log("")
