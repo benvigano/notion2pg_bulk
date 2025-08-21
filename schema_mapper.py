@@ -99,10 +99,68 @@ class NotionPropertyMapper:
     
     @staticmethod
     def _extract_rich_text(rich_text_array: List[Dict]) -> str:
-        """Extract plain text from Notion rich text array."""
+        """Extract markdown-formatted text from Notion rich text array."""
         if not rich_text_array:
             return ""
-        return "".join(item.get("plain_text", "") for item in rich_text_array)
+        
+        markdown_parts = []
+        for item in rich_text_array:
+            text_content = item.get("text", {}).get("content", "")
+            if not text_content:
+                continue
+            
+            # Get annotations
+            annotations = item.get("annotations", {})
+            link_url = item.get("href")
+            
+            # Apply formatting based on annotations
+            formatted_text = text_content
+            
+            # Handle code formatting first (it's inline)
+            if annotations.get("code"):
+                formatted_text = f"`{formatted_text}`"
+            
+            # Handle strikethrough
+            if annotations.get("strikethrough"):
+                formatted_text = f"~~{formatted_text}~~"
+            
+            # Handle bold
+            if annotations.get("bold"):
+                formatted_text = f"**{formatted_text}**"
+            
+            # Handle italic
+            if annotations.get("italic"):
+                formatted_text = f"*{formatted_text}*"
+            
+            # Handle underline (convert to HTML since markdown doesn't have underline)
+            if annotations.get("underline"):
+                formatted_text = f"<u>{formatted_text}</u>"
+            
+            # Handle links
+            if link_url:
+                formatted_text = f"[{formatted_text}]({link_url})"
+            
+            # Handle color (convert to HTML span with color)
+            color = annotations.get("color")
+            if color and color != "default":
+                # Map Notion colors to CSS colors
+                color_map = {
+                    "gray": "#787774",
+                    "brown": "#9f6b53", 
+                    "orange": "#d9730d",
+                    "yellow": "#dfab01",
+                    "green": "#0f7b6c",
+                    "blue": "#0b6e99",
+                    "purple": "#6940a5",
+                    "pink": "#ad1a72",
+                    "red": "#e03e3e"
+                }
+                css_color = color_map.get(color, color)
+                formatted_text = f'<span style="color: {css_color}">{formatted_text}</span>'
+            
+            markdown_parts.append(formatted_text)
+        
+        return "".join(markdown_parts)
     
     @staticmethod
     def get_lookup_table_name(table_name: str, field_name: str) -> str:

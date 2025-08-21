@@ -59,6 +59,7 @@ migrator.run()
 |----------------|-----------------|-------|
 | Title | `TEXT` | Primary identifier |
 | Rich Text | `TEXT` | Formatted as plain text |
+| Rich Text | `TEXT` | Preserved as markdown with formatting |
 | Number | `NUMERIC` | |
 | Select | `TEXT` | Single option value + lookup table with foreign key |
 | Multi-select | `TEXT[]` | Array of option values + lookup table with check constraints |
