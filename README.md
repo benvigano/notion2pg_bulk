@@ -47,13 +47,25 @@ A Python package that performs a full migration of a Notion workspace to a Postg
 - Runs migration directly without progress bars
 - Ideal for automated scripts and CI/CD pipelines
 - Use `--quiet` flag in CLI or set `interactive_mode=False` in Python API
-**CLI:**
+**CLI Options:**
+- `--notion-token`: Notion integration token (or set `NOTION_TOKEN` env var)
+- `--database-url`: PostgreSQL connection string (or set `DATABASE_URL` env var)
+- `--quiet`: Run in non-interactive mode (skip validation steps and progress bars)
+- `--extract-page-content`: Extract free-form content from page bodies (slower migration)
+
+**CLI Examples:**
 ```bash
 # Interactive mode (default)
 python cli.py --notion-token "your_token" --database-url "postgresql://..."
 
 # Non-interactive mode (skip validation steps)
 python cli.py --notion-token "your_token" --database-url "postgresql://..." --quiet
+
+# Extract page content (slower but includes free-form content)
+python cli.py --notion-token "your_token" --database-url "postgresql://..." --extract-page-content
+
+# Non-interactive with page content extraction
+python cli.py --notion-token "your_token" --database-url "postgresql://..." --quiet --extract-page-content
 ```
 
 **Python API:**

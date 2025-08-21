@@ -29,6 +29,12 @@ def main():
     )
     
     parser.add_argument(
+        "--extract-page-content",
+        action="store_true",
+        help="Extract free-form content from page bodies (slower migration)"
+    )
+    
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Run in non-interactive mode (skip validation steps and progress bars)"
@@ -54,7 +60,8 @@ def main():
     migrator = NotionMigrator(
         notion_token=notion_token,
         db_connection=engine,
-        interactive_mode=not args.quiet
+        interactive_mode=not args.quiet,
+        extract_page_content=args.extract_page_content
     )
     
     migrator.run()
