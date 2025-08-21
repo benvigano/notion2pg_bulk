@@ -8,50 +8,31 @@
 
 ## Setup and Usage
 
-### 1. Create a Notion Integration
+### Requirements
+- a **Notion API key** connected to all the databased that you wish to migrate (note: Notion now allows to connect databases ditectly from the integration configuration page, under the 'Access' tab. For quickly connecting **all databases** in a workspace, just tick all top level pages.
+- PostgreSQL database connection URL
 
-1. Go to [Notion Developers](https://www.notion.so/my-integrations)
-2. Click "New integration"
-3. Give it a name and select your workspace
-4. **Configure permissions** (following least privilege principle):
-   - **Read content** - Required to read database schemas and data
-   - **Read comments** - Required for property descriptions
+### Interactive Mode
+**On (Default):**
+- Dispays detected databases and fields and asks for confirmation before running the migration
+- Progress bar
+- Shows post-migration notes
 
-5. Copy the "Internal Integration Token"
-
-### 2. Grant Database Access
-
-**Option A: From Integration Page (faster for selecting all databases)**
-1. In your integration settings, go to "Access" tab
-2. Select databases singularly, or select all top-level pages to quickly grant access to all databases within them
-
-**Option B: GUI**
-1. Open each database in Notion
-2. Click the "..." menu in the top right
-3. Select "Add connections"
-4. Find and select your integration
-
-### 3. Install and Run
-
-**Interactive Mode (Default):**
-- Shows progress bars and detailed output
-- Performs database connection tests
-- Displays migration plan with analysis
-- Prompts for user confirmation before proceeding
-- Shows post-migration analysis
-
-**Non-Interactive Mode:**
-- Skips validation steps and user prompts
-- Runs migration directly without progress bars
-- Ideal for automated scripts and CI/CD pipelines
+**Off:**
+- No validation steps
+- No user prompts
+- No prints
+- Runs migration directly
 - Use `--quiet` flag in CLI or set `interactive_mode=False` in Python API
-**CLI Options:**
+
+### CLI
+**Options:**
 - `--notion-token`: Notion integration token (or set `NOTION_TOKEN` env var)
 - `--database-url`: PostgreSQL connection string (or set `DATABASE_URL` env var)
 - `--quiet`: Run in non-interactive mode (skip validation steps and progress bars)
 - `--extract-page-content`: Extract free-form content from page bodies (slower migration)
 
-**CLI Examples:**
+**Examples:**
 ```bash
 # Interactive mode (default)
 python cli.py --notion-token "your_token" --database-url "postgresql://..."
@@ -66,7 +47,7 @@ python cli.py --notion-token "your_token" --database-url "postgresql://..." --ex
 python cli.py --notion-token "your_token" --database-url "postgresql://..." --quiet --extract-page-content
 ```
 
-**Python API:**
+### Python API:
 ```python
 from migrator import NotionMigrator
 import sqlalchemy as sa
@@ -75,7 +56,7 @@ engine = sa.create_engine('postgresql://user:password@localhost/dbname')
 migrator = NotionMigrator(
     notion_token="your_notion_integration_token",
     db_connection=engine,
-    interactive_mode=True  # Set to False for non-interactive mode
+    interactive_mode=True
 )
 migrator.run()
 ```
@@ -104,7 +85,7 @@ migrator.run()
 | Formula | - | ⚠️ Skipped (not supported by Notion API) |
 | Rollup | - | ⚠️ Skipped (not supported by Notion API) |
 
-## `additional_page_content`
+## Additional Page Content Mode
 
 The migrator can optionally extract free-form content from database pages. Extracted content is stored in the `additional_page_content` column as plain text.
 
