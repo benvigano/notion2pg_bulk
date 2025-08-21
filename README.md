@@ -1,7 +1,5 @@
 # Notion Workspace to PostgreSQL Migration Tool
 
-A Python package that performs a full migration of a Notion workspace to a PostgreSQL database.
-
 - Automatically discovers and migrates **all databases in a workspace** regardless of their views or position in the page structure
 - Preserves **database and property descriptions**
 - Supports **relation properties** using PostgreSQL arrays
