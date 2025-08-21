@@ -1,7 +1,7 @@
 # Notion Workspace to PostgreSQL Migration Tool
 
 - Automatically discovers and migrates **all databases in a workspace** regardless of their views or position in the page structure
-- Preserves **database and property descriptions**
+- Preserves **database descriptions and property descriptions**
 - Supports **relation properties** using PostgreSQL arrays
 - **Select field support**: Single and multi-select options stored in separate lookup tables with foreign key constraints
 - Complies with Notion API limits (3 requests/second average)
@@ -19,11 +19,8 @@
 - Shows post-migration notes
 
 **Off:**
-- No validation steps
-- No user prompts
-- No prints
-- Runs migration directly
-- Use `--quiet` flag in CLI or set `interactive_mode=False` in Python API
+(`--quiet` flag in CLI or set `interactive_mode=False` in Python API)
+- `.run()` runs migration directly and silently
 
 ### CLI
 **Options:**
