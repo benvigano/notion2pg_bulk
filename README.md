@@ -56,7 +56,8 @@ engine = sa.create_engine('postgresql://user:password@localhost/dbname')
 migrator = NotionMigrator(
     notion_token="your_notion_integration_token",
     db_connection=engine,
-    interactive_mode=True
+    interactive_mode=True,
+    extract_page_content=True,
 )
 migrator.run()
 ```
