@@ -9,13 +9,13 @@ from tqdm import tqdm
 class ProgressTracker:
     """Manages progress bars for different migration phases."""
     
-    def __init__(self, verbose: bool = True):
-        self.verbose = verbose
+    def __init__(self, interactive_mode: bool = True):
+        self.interactive_mode = interactive_mode
         self._current_bar: Optional[tqdm] = None
     
     def start_phase(self, description: str, total: Optional[int] = None) -> None:
         """Start a new progress phase."""
-        if not self.verbose:
+        if not self.interactive_mode:
             return
             
         if self._current_bar is not None:
@@ -38,23 +38,23 @@ class ProgressTracker:
     
     def update(self, n: int = 1) -> None:
         """Update current progress bar."""
-        if self.verbose and self._current_bar is not None:
+        if self.interactive_mode and self._current_bar is not None:
             self._current_bar.update(n)
     
     def set_postfix(self, **kwargs) -> None:
         """Set postfix information on current progress bar."""
-        if self.verbose and self._current_bar is not None:
+        if self.interactive_mode and self._current_bar is not None:
             self._current_bar.set_postfix(**kwargs)
     
     def finish_phase(self) -> None:
         """Finish current progress phase."""
-        if self.verbose and self._current_bar is not None:
+        if self.interactive_mode and self._current_bar is not None:
             self._current_bar.close()
             self._current_bar = None
     
     def log(self, message: str) -> None:
         """Log a message, ensuring it doesn't interfere with progress bars."""
-        if not self.verbose:
+        if not self.interactive_mode:
             return
             
         if self._current_bar is not None:

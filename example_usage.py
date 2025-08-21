@@ -24,8 +24,8 @@ def main():
     migrator = NotionMigrator(
         notion_token=notion_token,
         db_connection=engine,
-        verbose=True,
-        extract_page_content=False  # Set to True to extract free-form page content (slower)
+        interactive_mode=True,
+        extract_page_content=True  # Set to True to extract free-form page content (slower)
     )
     
     # Run migration

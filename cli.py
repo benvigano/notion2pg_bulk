@@ -31,7 +31,7 @@ def main():
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Disable verbose output and progress bars"
+        help="Run in non-interactive mode (skip validation steps and progress bars)"
     )
     
     args = parser.parse_args()
@@ -50,18 +50,11 @@ def main():
     # Create database connection
     engine = sa.create_engine(database_url)
     
-    # Test connection
-    with engine.connect() as conn:
-        conn.execute(sa.text("SELECT 1"))
-    
-    if not args.quiet:
-        print("✅ Connected to database successfully")
-    
     # Initialize and run migrator
     migrator = NotionMigrator(
         notion_token=notion_token,
         db_connection=engine,
-        verbose=not args.quiet
+        interactive_mode=not args.quiet
     )
     
     migrator.run()

@@ -23,7 +23,7 @@ except ImportError:
 class NotionMigrator:
     """Main class for migrating Notion workspace to PostgreSQL."""
     
-    def __init__(self, notion_token: str, db_connection: Engine, verbose: bool = True, 
+    def __init__(self, notion_token: str, db_connection: Engine, interactive_mode: bool = True, 
                  extract_page_content: bool = False):
         """
         Initialize the migrator.
@@ -31,20 +31,21 @@ class NotionMigrator:
         Args:
             notion_token: Notion integration token
             db_connection: SQLAlchemy engine for PostgreSQL connection
-            verbose: Enable verbose output with progress bars
+            interactive_mode: Enable interactive mode with progress bars and validation steps
             extract_page_content: Extract free-form content from page bodies (slower migration)
         """
         self.notion = Client(auth=notion_token)
         self.db_engine = db_connection
-        self.verbose = verbose
+        self.interactive_mode = interactive_mode
         self.extract_page_content = extract_page_content
-        self.progress = ProgressTracker(verbose)
+        self.progress = ProgressTracker(interactive_mode)
         self.rate_limiter = RateLimiter(requests_per_second=2.5)
         self.metadata = MetaData()
         self.property_mapper = NotionPropertyMapper()
         
         # Test database connection during initialization
-        self._test_database_connection()
+        if self.interactive_mode:
+            self._test_database_connection()
         
         # Track created tables and lookup tables
         self.created_tables: Dict[str, Table] = {}
@@ -60,8 +61,9 @@ class NotionMigrator:
         """Run the complete migration process."""
         try:
             # Check database schemas and test Notion connection
-            self._check_clean_database()
-            self._test_notion_connection()
+            if self.interactive_mode:
+                self._check_clean_database()
+                self._test_notion_connection()
             
             # Phase 1: Discover Notion databases
             self.progress.start_phase("🔎 Discovering Notion databases", None)
@@ -72,13 +74,14 @@ class NotionMigrator:
                 self.progress.log("No Notion databases found. Please share databases with your integration.")
                 return
             
-            # Show migration plan with analysis
-            self._show_migration_plan(databases)
-            
-            # Get user confirmation
-            if not self._get_user_confirmation():
-                self.progress.log("Migration cancelled by user.")
-                return
+            # Show migration plan with analysis (only in interactive mode)
+            if self.interactive_mode:
+                self._show_migration_plan(databases)
+                
+                # Get user confirmation
+                if not self._get_user_confirmation():
+                    self.progress.log("Migration cancelled by user.")
+                    return
             
             # Phase 2: Create PostgreSQL schema
             self.progress.start_phase("Creating PostgreSQL schema", len(databases))
@@ -94,14 +97,15 @@ class NotionMigrator:
                 self.progress.update(1)
             self.progress.finish_phase()
             
-            self.progress.log("✅ Migration completed successfully")
-            
-            # Post-migration analysis (only embedded databases)
-            if self.extract_page_content:
-                self.progress.log("\n" + "=" * 70)
-                self.progress.log("MIGRATION NOTES")
-                self.progress.log("=" * 70)
-                self._show_embedded_databases_summary()
+            if self.interactive_mode:
+                self.progress.log("✅ Migration completed successfully")
+                
+                # Post-migration analysis (only embedded databases)
+                if self.extract_page_content:
+                    self.progress.log("\n" + "=" * 70)
+                    self.progress.log("MIGRATION NOTES")
+                    self.progress.log("=" * 70)
+                    self._show_embedded_databases_summary()
             
         finally:
             self.progress.cleanup()
@@ -138,7 +142,7 @@ class NotionMigrator:
         try:
             with self.db_engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-            if self.verbose:
+            if self.interactive_mode:
                 self.progress.log("🔗 Connected to PostgreSQL database successfully")
         except Exception as e:
             raise ValueError(f"Failed to connect to PostgreSQL database: {e}")
@@ -147,7 +151,8 @@ class NotionMigrator:
         """Test Notion API connection."""
         try:
             self.rate_limiter.rate_limited_call(self.notion.users.me)
-            self.progress.log("🔗 Successfully connected to Notion API")
+            if self.interactive_mode:
+                self.progress.log("🔗 Successfully connected to Notion API")
         except Exception as e:
             raise ValueError(f"Failed to connect to Notion API: {e}")
     
@@ -174,6 +179,27 @@ class NotionMigrator:
             if not response.get("has_more", False):
                 break
             start_cursor = response.get("next_cursor")
+
+
+
+
+
+
+        # TEMPORARY: Filter for specific databases only
+        allowed_databases = ["Data", "Backups", "Automations", "Cloud spaces", "Cloud providers", "External drives"]
+        filtered_databases = []
+        for db in databases:
+            db_title = self._extract_database_title(db)
+            if db_title in allowed_databases:
+                filtered_databases.append(db)
+
+        databases = filtered_databases
+
+
+
+
+
+
         
         # Get detailed schema for each database
         detailed_databases = []

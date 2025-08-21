@@ -34,9 +34,26 @@ A Python package that performs a full migration of a Notion workspace to a Postg
 4. Find and select your integration
 
 ### 3. Install and Run
+
+**Interactive Mode (Default):**
+- Shows progress bars and detailed output
+- Performs database connection tests
+- Displays migration plan with analysis
+- Prompts for user confirmation before proceeding
+- Shows post-migration analysis
+
+**Non-Interactive Mode:**
+- Skips validation steps and user prompts
+- Runs migration directly without progress bars
+- Ideal for automated scripts and CI/CD pipelines
+- Use `--quiet` flag in CLI or set `interactive_mode=False` in Python API
 **CLI:**
 ```bash
+# Interactive mode (default)
 python cli.py --notion-token "your_token" --database-url "postgresql://..."
+
+# Non-interactive mode (skip validation steps)
+python cli.py --notion-token "your_token" --database-url "postgresql://..." --quiet
 ```
 
 **Python API:**
@@ -48,7 +65,7 @@ engine = sa.create_engine('postgresql://user:password@localhost/dbname')
 migrator = NotionMigrator(
     notion_token="your_notion_integration_token",
     db_connection=engine,
-    verbose=True
+    interactive_mode=True  # Set to False for non-interactive mode
 )
 migrator.run()
 ```
@@ -58,7 +75,6 @@ migrator.run()
 | Notion Property | PostgreSQL Type | Notes |
 |----------------|-----------------|-------|
 | Title | `TEXT` | Primary identifier |
-| Rich Text | `TEXT` | Formatted as plain text |
 | Rich Text | `TEXT` | Preserved as markdown with formatting |
 | Number | `NUMERIC` | |
 | Select | `TEXT` | Single option value + lookup table with foreign key |
