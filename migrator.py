@@ -2,12 +2,10 @@
 Main migration class for Notion workspace to PostgreSQL migration.
 """
 
-import time
 from typing import Dict, List, Any, Optional
 from tabulate import tabulate
 from notion_client import Client
-from notion_client.errors import APIResponseError
-from sqlalchemy import Engine, MetaData, Table, create_engine, text
+from sqlalchemy import Engine, MetaData, Table, text
 from sqlalchemy.dialects.postgresql import insert
 
 try:

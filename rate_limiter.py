@@ -3,7 +3,7 @@ Rate limiting utilities to comply with Notion API limits.
 """
 
 import time
-from typing import Optional, Callable, Any
+from typing import Callable, Any
 from functools import wraps
 
 
