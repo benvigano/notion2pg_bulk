@@ -182,27 +182,6 @@ class NotionMigrator:
             if not response.get("has_more", False):
                 break
             start_cursor = response.get("next_cursor")
-
-
-
-
-
-
-        # TEMPORARY: Filter for specific databases only
-        allowed_databases = ["Data", "Backups", "Automations", "Cloud spaces", "Cloud providers", "External drives"]
-        filtered_databases = []
-        for db in databases:
-            db_title = self._extract_database_title(db)
-            if db_title in allowed_databases:
-                filtered_databases.append(db)
-
-        databases = filtered_databases
-
-
-
-
-
-
         
         # Get detailed schema for each database
         detailed_databases = []
