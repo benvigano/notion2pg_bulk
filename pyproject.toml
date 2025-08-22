@@ -36,7 +36,7 @@ Repository = "https://github.com/benvigano/notion2pg-bulk"
 Issues = "https://github.com/benvigano/notion2pg-bulk/issues"
 
 [project.scripts]
-notion2pg-bulk = "notion2pg_bulk:main"
+notion2pg-bulk = "notion2pg_bulk.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.8.13,<0.9.0"]

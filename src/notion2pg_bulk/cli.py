@@ -6,10 +6,7 @@ import argparse
 import os
 import sys
 import sqlalchemy as sa
-try:
-    from .migrator import NotionMigrator
-except ImportError:
-    from migrator import NotionMigrator
+from .migrator import NotionMigrator
 
 
 def main():

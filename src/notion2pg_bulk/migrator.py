@@ -8,14 +8,9 @@ from notion_client import Client
 from sqlalchemy import Engine, MetaData, Table, text
 from sqlalchemy.dialects.postgresql import insert
 
-try:
-    from .schema_mapper import NotionPropertyMapper
-    from .progress_tracker import ProgressTracker
-    from .rate_limiter import RateLimiter
-except ImportError:
-    from schema_mapper import NotionPropertyMapper
-    from progress_tracker import ProgressTracker
-    from rate_limiter import RateLimiter
+from .schema_mapper import NotionPropertyMapper
+from .progress_tracker import ProgressTracker
+from .rate_limiter import RateLimiter
 
 
 class NotionMigrator:
