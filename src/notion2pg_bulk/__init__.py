@@ -1,2 +1,6 @@
-def main() -> None:
-    print("Hello from notion2pg-bulk!")
+"""
+Notion Workspace to PostgreSQL Migration Tool
+"""
+from .migrator import NotionMigrator
+
+__all__ = ["NotionMigrator"]
