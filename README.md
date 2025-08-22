@@ -1,10 +1,15 @@
-# Notion Workspace to PostgreSQL Migration Tool
+# notion2pg_bulk
 
 - Automatically discovers and migrates **all databases in a workspace** regardless of their views or position in the page structure
 - Preserves **database descriptions and property descriptions**
 - Supports **relation properties** using PostgreSQL arrays
 - **Select field support**: Single and multi-select options stored in separate lookup tables with foreign key constraints
 - Complies with Notion API limits (3 requests/second average)
+
+## Installation
+```bash
+pip install notion2pg-bulk
+```
 
 ## Setup and Usage
 
@@ -32,21 +37,21 @@
 **Examples:**
 ```bash
 # Interactive mode (default)
-python cli.py --notion-token "your_token" --database-url "postgresql://..."
+notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..."
 
 # Non-interactive mode (skip validation steps)
-python cli.py --notion-token "your_token" --database-url "postgresql://..." --quiet
+notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..." --quiet
 
 # Extract page content (slower but includes free-form content)
-python cli.py --notion-token "your_token" --database-url "postgresql://..." --extract-page-content
+notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..." --extract-page-content
 
 # Non-interactive with page content extraction
-python cli.py --notion-token "your_token" --database-url "postgresql://..." --quiet --extract-page-content
+notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..." --quiet --extract-page-content
 ```
 
 ### Python API:
 ```python
-from migrator import NotionMigrator
+from notion2pg_bulk import NotionMigrator
 import sqlalchemy as sa
 
 engine = sa.create_engine('postgresql://user:password@localhost/dbname')
