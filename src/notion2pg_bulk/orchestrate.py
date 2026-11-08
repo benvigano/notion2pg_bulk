@@ -184,11 +184,23 @@ class _Snapshot:
         return merged
 
     def _load_views(self, view_ids: Iterable[str]) -> None:
-        """Retrieve and load the views not fetched yet, and record the linked
-        containers they reveal (by ID only, never replacing a block-derived record).
+        """Retrieve and load the views not fetched yet, plus the dashboards their
+        widgets belong to, and record the linked containers they reveal (by ID
+        only, never replacing a block-derived record).
         """
-        fetched = [fetch.fetch_view(self.api, view_id) for view_id in dict.fromkeys(view_ids) if view_id not in self.views]
-        self.views.update((view.view_id, view) for view in fetched)
+        fetched: List[ViewRecord] = []
+        pending = list(dict.fromkeys(view_ids))
+        while pending:
+            batch = [fetch.fetch_view(self.api, view_id) for view_id in pending if view_id not in self.views]
+            self.views.update((view.view_id, view) for view in batch)
+            fetched.extend(batch)
+            pending = list(
+                dict.fromkeys(
+                    view.dashboard_view_id
+                    for view in batch
+                    if view.dashboard_view_id is not None and view.dashboard_view_id not in self.views
+                )
+            )
         load.load_views(self.conn, fetched)
         revealed = [
             record

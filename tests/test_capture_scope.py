@@ -183,3 +183,16 @@ def test_missed_data_source_still_obeys_naming_checks(database_url, clock):
     ws.fake.children[ws.standalone_page].append(block("child_database", {"title": "Dup"}, block_id=hidden_db))
     with pytest.raises(SnapshotIntegrityError):
         run_snapshot(ws.fake, database_url, clock)
+
+
+def test_dashboard_of_a_widget_is_fetched_and_its_container_recorded(database_url, clock):
+    ws = build_workspace()
+    container, dashboard, widget = new_id(), new_id(), new_id()
+    ws.fake.add_view(view(dashboard, container, None, "dashboard",
+                          rows=[{"widgets": [{"id": "w", "view_id": widget, "width": 12, "row_index": 0}]}]))
+    ws.fake.add_view(view(widget, container, ws.tasks_ds, "table", dashboard_view_id=dashboard))
+    run_snapshot(ws.fake, database_url, clock)
+    found = {r[0]: r[1:] for r in query(database_url, "SELECT view_id::text, type, database_id::text FROM notion.views")}
+    assert found[dashboard] == ("dashboard", container) and found[widget] == ("table", container)
+    assert ws.fake.count("GET", f"views/{dashboard}") == 1
+    assert dict(query(database_url, "SELECT database_id::text, is_linked FROM notion.databases"))[container] is True
