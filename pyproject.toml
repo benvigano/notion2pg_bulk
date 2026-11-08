@@ -1,6 +1,6 @@
 [project]
 name = "notion2pg-bulk"
-version = "0.2.0"
+version = "1.0.0"
 description = "Snapshot an entire Notion workspace into a PostgreSQL database."
 readme = "README.md"
 requires-python = ">=3.10"
