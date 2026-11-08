@@ -14,6 +14,9 @@
     },
     {
       "$ref": "#/$defs/request_failed"
+    },
+    {
+      "$ref": "#/$defs/discovery_stopped"
     }
   ],
   "$defs": {
@@ -315,6 +318,49 @@
         },
         "level": {
           "const": "error"
+        },
+        "ts": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "propagation_id": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "locus": {
+          "$ref": "#/$defs/locus"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "anomaly": {
+          "$ref": "#/$defs/anomaly"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        }
+      },
+      "required": [
+        "event",
+        "level",
+        "ts",
+        "propagation_id",
+        "locus",
+        "attempt",
+        "anomaly",
+        "context"
+      ]
+    },
+    "discovery_stopped": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "discovery_stopped"
+        },
+        "level": {
+          "const": "info"
         },
         "ts": {
           "type": "string",

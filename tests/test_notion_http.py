@@ -318,3 +318,26 @@ def test_schema_rejects_a_wrong_level():
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(event, load_schema())
     jsonschema.validate({**event, "level": "info"}, load_schema())
+
+
+def test_missing_ok_turns_a_404_into_none(clock, telemetry_events):
+    handler, calls = scripted([respond(error_response(404, "object_not_found"))])
+    assert make_http(handler, clock).request("GET", "pages/p", "/v1/pages/{page_id}", missing_ok=True) is None
+    assert len(calls) == 1
+    [event] = telemetry_events.events
+    assert (event["event"], event["level"], event["anomaly"]["http_status"]) == ("discovery_stopped", "info", 404)
+
+
+@pytest.mark.parametrize("status,code", [(400, "validation_error"), (403, "restricted_resource"), (401, "unauthorized")])
+def test_missing_ok_does_not_hide_other_errors(clock, telemetry_events, status, code):
+    handler, _ = scripted([respond(error_response(status, code))])
+    with pytest.raises(NotionAPIError):
+        make_http(handler, clock).request("GET", "pages/p", "/v1/pages/{page_id}", missing_ok=True)
+    assert telemetry_events.names() == ["request_failed"]
+
+
+def test_404_raises_without_missing_ok(clock, telemetry_events):
+    handler, _ = scripted([respond(error_response(404, "object_not_found"))])
+    with pytest.raises(NotionAPIError):
+        make_http(handler, clock).request("GET", "pages/p", "/v1/pages/{page_id}")
+    assert telemetry_events.names() == ["request_failed"]

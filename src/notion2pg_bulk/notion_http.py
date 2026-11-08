@@ -15,6 +15,7 @@ from .errors import NotionAPIError, RetriesExhaustedError
 from .telemetry import (
     Anomaly,
     Context,
+    DiscoveryStopped,
     Fault,
     Locus,
     RequestFailed,
@@ -52,6 +53,7 @@ TRANSPORT_FAULTS: Tuple[type, ...] = (
     httpx.ReadError,
 )
 SERVER_ERROR_STATUSES = frozenset({500, 502, 503, 504})
+NOT_FOUND = 404
 BLOCKED_RATE_LIMIT_REASON = "public_api_request_blocked"
 
 Clock = Callable[[], float]
@@ -227,7 +229,8 @@ class NotionHTTP:
         query: Optional[Mapping[str, Any]] = None,
         body: Optional[Mapping[str, Any]] = None,
         is_data_source_query: bool = False,
-    ) -> Dict[str, Any]:
+        missing_ok: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """Send one request, retrying only the mapped faults.
 
         :param method: HTTP method.
@@ -236,7 +239,9 @@ class NotionHTTP:
         :param query: Query-string parameters.
         :param body: JSON body.
         :param is_data_source_query: Whether the data source query limit applies.
-        :returns: The decoded JSON response.
+        :param missing_ok: The request only extends discovery: a 404 ends that
+            path (``None`` is returned) instead of raising.
+        :returns: The decoded JSON response, or ``None`` for an ignored 404.
         :raises NotionAPIError: Notion answered with an unmapped error.
         :raises RetriesExhaustedError: A mapped fault outlasted the retry policy.
         """
@@ -245,6 +250,21 @@ class NotionHTTP:
             self.limiter.acquire(is_data_source_query, locus)
             try:
                 outcome = self._attempt(method, path, query, body)
+            except NotionAPIError as exc:
+                if missing_ok and exc.status == NOT_FOUND:
+                    self._telemetry.emit(
+                        DiscoveryStopped(
+                            ts=utc_now(),
+                            propagation_id=self._telemetry.propagation_id,
+                            locus=locus,
+                            attempt=attempt,
+                            anomaly=_anomaly(exc),
+                            context=_context(exc),
+                        )
+                    )
+                    return None
+                self._emit_failed(exc, attempt, locus)
+                raise
             except Exception as exc:
                 self._emit_failed(exc, attempt, locus)
                 raise

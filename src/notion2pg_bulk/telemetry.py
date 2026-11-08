@@ -180,7 +180,18 @@ class RequestFailed(_Event):
     level: Literal["error"] = field(default="error")
 
 
-TelemetryEvent = Union[ThrottleWait, RetryScheduled, RetriesExhausted, RequestFailed]
+@dataclass(frozen=True)
+class DiscoveryStopped(_Event):
+    """A lookup made only to extend discovery found nothing (404); that path ends."""
+
+    attempt: int
+    anomaly: Anomaly
+    context: Context
+    event: Literal["discovery_stopped"] = field(default="discovery_stopped")
+    level: Literal["info"] = field(default="info")
+
+
+TelemetryEvent = Union[ThrottleWait, RetryScheduled, RetriesExhausted, RequestFailed, DiscoveryStopped]
 
 _LOGGING_LEVELS = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
 
