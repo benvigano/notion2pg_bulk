@@ -2,6 +2,73 @@
 
 _Python package to snapshot a Notion workspace to a PostgreSQL database, within its [coverage limits](#coverage-limits)._
 
+## Installation
+### Pip
+```bash
+pip install notion2pg-bulk
+```
+### Uv
+```bash
+uv add notion2pg-bulk
+```
+
+## Setup and Usage
+
+### Requirements
+- **PostgreSQL database connection URL**
+- **Notion API token** with read content access to all content (no user capabilities and no comment capabilities). Notion doesn't allow Connections' content access to apply the whole workspace directly. This is achieved by ticking **all _Top-level pages_** in the Content access section in the desktop or web UI (Developer tools -> Connections -> MyConnection -> Content access -> Edit access). **Important**: each new top-level page that is subsequently added to the workspace **must be also manually granted access to Connection**, as new pages default to `unticked`.
+    > A workaround to ensure that the Connection will remain full-workspace in the future without needing to manually grant it access to all new top-level pages, is to place all content in a single static top-level page (ex: 'Workspace') which is granted once. This way all pages in the workspace will inherit its accessibility by the Connection regardless of structure changes.
+
+### Workspace requirements
+Row tables and columns are named verbatim, so the workspace must satisfy:
+1. Data source titles are unique (exact match) and non-empty.
+2. Every data source title and every name of a property that maps to a column is at most 63 bytes of UTF-8 (PostgreSQL's identifier limit).
+3. No property that maps to a column is named `tableoid`, `xmin`, `xmax`, `cmin`, `cmax`, `ctid` or `_page_id`.
+
+A violation aborts the snapshot with `SnapshotIntegrityError` before anything is written.
+
+### Target database
+The target must be a newly created database. Otherwise `TargetNotEmptyError` is raised before any Notion request. The package never drops or overwrites anything: to replace an old snapshot, create a fresh database, snapshot into it, then switch.
+
+### CLI
+
+Options:
+- `--notion-token`: Notion integration token (or set `NOTION_TOKEN` env var)
+- `--database-url`: PostgreSQL connection string of a newly created database (or set `DATABASE_URL` env var)
+- `--plan`: Notion workspace plan, which sets the request budget: `free` (default) or `plus` → 180 req/min; `business` or `enterprise` → 600 req/min
+- `--no-row-bodies`: Skip the bodies (blocks) of data source rows (much faster: at least one request per row is saved)
+- `--propagation-id`: Identifier carried by every telemetry event (generated if omitted)
+
+Examples:
+
+```bash
+# Full snapshot (row bodies included)
+notion2pg-bulk --notion-token "your_token" --database-url "postgresql://user:password@localhost/dbname"
+
+# Business or Enterprise workspace
+notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..." --plan business
+
+# Without row bodies (faster)
+notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..." --no-row-bodies
+```
+
+Telemetry is written to stderr, one JSON object per line. On failure the error is raised and the exit code is non-zero.
+
+### Python API
+
+```python
+from notion2pg_bulk import snapshot
+
+snapshot(
+    notion_token="your_notion_integration_token",
+    database_url="postgresql://user:password@localhost/dbname",
+    plan="free",
+    row_bodies=True,
+)
+```
+
+A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, with a 10 s connect timeout.
+
 ## Snapshot scope
 
 ### Not captured
@@ -52,86 +119,15 @@ Search is only the starting point. From there, discovery follows documented path
 - **down**: page bodies, `child_page` blocks, and the views of `child_database` blocks (listed by `database_id`);
 - **sideways**: data sources named by relation settings, views and dashboard widgets; pages and databases named by `link_to_page` blocks and mentions; the original block of each synced-block copy (`synced_from.block_id`), followed up to its page; child data sources (wikis) returned by data source queries.
 
-Every page found gets its body walked; every data source found gets its table, rows and views. A path ends at an object that is not found (404 on a lookup made only to extend discovery) or that is returned trashed or archived. A database reached by ID is original only if it contains a discovered data source; otherwise it is recorded as linked.
+Every page found gets its body walked; every data source found gets its table, rows and views.
 
 ## Coverage limits
-Even with full workspace access and every requirement below met, a snapshot may miss:
+Even with full workspace access and every requirement above met, a snapshot may miss:
 - **Content that no documented path connects to captured content**: search can miss items, and nothing else leads to them (this includes an original database with no views reached only by ID, e.g. through a mention: `GET /databases/{id}` isn't used on databases reached by ID, so it is recorded as linked). Keeping all content under a single top-level page makes the workspace one connected tree.
 - **Pages whose parent is `database_id`**: search is their only path.
 - **Items reachable only through row bodies**, when row bodies are skipped.
 - **A dashboard without widgets, inside a linked database the walk never reaches.**
 - **Edits made while the snapshot runs.** Search also lags behind recent changes.
-
-## Installation
-### Pip
-```bash
-pip install notion2pg-bulk
-```
-### Uv
-```bash
-uv add notion2pg-bulk
-```
-
-## Setup and Usage
-
-### Requirements
-- **PostgreSQL database connection URL**
-- **Notion API token** with read access to all content. Notion doesn't allow Connections' content access to apply the whole workspace directly. This is achieved by ticking **all _Top-level pages_** in the Content access section in the desktop or web UI (Developer tools -> Connections -> MyConnection -> Content access -> Edit access). **Important**: each new top-level page that is subsequently added to the workspace **must be also manually granted access to Connection**, as new pages default to `unticked`.
-    > A workaround to ensure that the Connection will remain full-workspace in the future without needing to manually grant it access to all new top-level pages, is to place all content in a single static top-level page (ex: 'Workspace') which is granted once. This way all pages in the workspace will inherit its accessibility by the Connection regardless of structure changes.
-
-### Connection capabilities
-- **Read content** only. No user capabilities and no comment capabilities are needed.
-- Shared with the whole workspace (see above).
-
-### Workspace requirements
-Row tables and columns are named verbatim, so the workspace must satisfy:
-1. Data source titles are unique (exact match) and non-empty.
-2. Every data source title and every name of a property that maps to a column is at most 63 bytes of UTF-8 (PostgreSQL's identifier limit).
-3. No property that maps to a column is named `tableoid`, `xmin`, `xmax`, `cmin`, `cmax`, `ctid` or `_page_id`.
-
-A violation aborts the snapshot with `SnapshotIntegrityError` before anything is written.
-
-### Target database
-The target must be empty: no schema besides `public` (and the system schemas), and nothing in `public` (tables, views, materialized views, sequences, foreign tables, functions, types). Default extensions (`plpgsql`) are ignored. Otherwise `TargetNotEmptyError` is raised before any Notion request. The package never drops or overwrites anything: to replace an old snapshot, create a fresh database, snapshot into it, then switch.
-
-### CLI
-
-Options:
-- `--notion-token`: Notion integration token (or set `NOTION_TOKEN` env var)
-- `--database-url`: PostgreSQL connection string of an empty database (or set `DATABASE_URL` env var)
-- `--plan`: Notion workspace plan, which sets the request budget: `free` (default) or `plus` → 180 req/min; `business` or `enterprise` → 600 req/min
-- `--no-row-bodies`: Skip the bodies (blocks) of data source rows (much faster: at least one request per row is saved)
-- `--propagation-id`: Identifier carried by every telemetry event (generated if omitted)
-
-Examples:
-
-```bash
-# Full snapshot (row bodies included)
-notion2pg-bulk --notion-token "your_token" --database-url "postgresql://user:password@localhost/dbname"
-
-# Business or Enterprise workspace
-notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..." --plan business
-
-# Without row bodies (faster)
-notion2pg-bulk --notion-token "your_token" --database-url "postgresql://..." --no-row-bodies
-```
-
-Telemetry is written to stderr, one JSON object per line. On failure the error is raised and the exit code is non-zero.
-
-### Python API
-
-```python
-from notion2pg_bulk import snapshot
-
-snapshot(
-    notion_token="your_notion_integration_token",
-    database_url="postgresql://user:password@localhost/dbname",
-    plan="free",
-    row_bodies=True,
-)
-```
-
-A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, with a 10 s connect timeout.
 
 ## PostgreSQL mapping
 
@@ -194,17 +190,16 @@ A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, w
 Empty values are `NULL` (the API returns `null` or `[]` for them); an unchecked checkbox is `false`.
 
 ## Consistency
-Notion has no snapshot API, so **a snapshot is not point-in-time consistent**: entities are read one after another over minutes (an hour or more with row bodies), and edits made meanwhile may be partly reflected. If a row shows a property, type or option that the schema read earlier lacks, the data source is read again: new properties get a column (under the name first seen), while a property that changed type, or an option still unknown after the re-read, aborts the snapshot.
-
-The snapshot itself is atomic: DDL and data are written in one PostgreSQL transaction, so a failed run leaves the target empty.
+- DDL and data are written in one PostgreSQL transaction, so a failed run leaves the target as it was.
+- Notion has no snapshot API, so **a snapshot is not point-in-time consistent**: entities are read one after another over minutes (an hour or more with row bodies), and edits made meanwhile may be partly reflected. If a row shows a property, type or option that the schema read earlier lacks, the data source is read again: new properties get a column (under the name first seen), while a property that changed type, or an option still unknown after the re-read, aborts the snapshot with `SnapshotIntegrityError`.
 
 ## Failures
-Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target empty. Nothing is skipped and continued, with two exceptions: a lookup made only to extend [discovery](#discovery) that returns 404 simply ends that path, and an object returned with `in_trash` (or `is_archived`) is out of scope and ends its path too.
+Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target as it was. Nothing is skipped and continued, except where a discovery path ends ([where discovery stops](#where-discovery-stops)).
 
 | Exception | Raised when |
 |---|---|
 | `Notion2PgError` | Base class |
-| `TargetNotEmptyError` | The target database is not empty |
+| `TargetNotEmptyError` | The target database is not newly created |
 | `NotionAPIError` | Notion returned an error that is not retried (`status`, `code`, `request_id`) |
 | `RetriesExhaustedError` | A retried fault persisted, or Notion asked to wait more than 300 s (`last_fault`) |
 | `SnapshotIntegrityError` | A completeness guarantee can't be met (a pagination cursor repeats or is missing, a 10k-row window can't advance, a workspace requirement is violated, a property changes type, nesting deeper than 100 blocks) |
@@ -216,7 +211,16 @@ Any fault that is not retried, or that persists after its retries, raises an exc
 - Indicative duration on Free for a workspace of ~70 data sources and ~8,500 rows: about 5 min without row bodies, 50+ min with them.
 
 ## Telemetry
-Every limiter wait and retry transition emits one JSON event on the `notion2pg_bulk` logger (the package itself only adds a `NullHandler`): `throttle_wait`, `retry_scheduled`, `retries_exhausted`, `request_failed` and `discovery_stopped` (a path ends: `reason` is `not_found` for a 404 on a lookup made only to extend discovery, `in_trash` or `archived` for an object returned out of scope). Each carries `level` (`info` for `throttle_wait` and `discovery_stopped`, `warning` for `retry_scheduled`, `error` for the other two; the record is logged at that level), `ts`, `propagation_id`, the locus (`phase`, `entity_type`, `entity_id`, `method`, `endpoint`), the fault's scalars (`http_status`, `code`, `rate_limit_reason`, `request_id`, `exception_type`) and the Notion error `message`. Headers, the token and request or response bodies are never included; strings are cut at 512 characters. The JSON Schema ships with the package as `notion2pg_bulk/telemetry.schema.json`; the event record is also attached to each log record as `record.telemetry`.
+One JSON event per limiter wait, retry transition or ended discovery path, on the `notion2pg_bulk` logger (the package only adds a `NullHandler`; the CLI writes to stderr).
+- **Events**
+  - `throttle_wait` (`info`): the limiter blocked a request.
+  - `retry_scheduled` (`warning`): a retried fault, and the wait before the next attempt.
+  - `retries_exhausted` (`error`): a retried fault that persisted.
+  - `request_failed` (`error`): a fault that is not retried.
+  - `discovery_stopped` (`info`): a discovery path ended (`reason`: `not_found`, `in_trash` or `archived`).
+- **Fields**: `event`, `level`, `ts`, `propagation_id`; locus (`phase`, `entity_type`, `entity_id`, `method`, `endpoint`); fault (`http_status`, `code`, `rate_limit_reason`, `request_id`, `exception_type`); the Notion error `message`.
+- **Never included**: headers, the token, request or response bodies. Strings are cut at 512 characters.
+- **Schema**: `notion2pg_bulk/telemetry.schema.json`. Each log record also carries the event as `record.telemetry`.
 
 ## Tests
 There are two suites, kept apart:
@@ -234,29 +238,28 @@ NOTION2PG_TEST_ADMIN_URL="postgresql://postgres:postgres@localhost/postgres" uv 
 ```
 
 ### Live integration tests
-They check, against the real API, the assumptions the snapshot depends on that the Notion docs don't state exactly (trashed targets, linked and full-page databases as blocks, values over 25 items, discovery by ID, synced blocks, dashboards, query windowing, archived rows, dates, lock state, and that two snapshots are identical). Each run builds its own fixtures, takes three snapshots (two full ones, and one with row bodies off and chosen items removed from search results, so the other discovery paths must reach them), checks the results, and tears everything down. About 4 minutes on the Free plan.
+They check, against a real Notion workspace, the assumptions the snapshot depends on that the Notion docs don't state exactly. Each run builds its own fixtures under a root page, takes three snapshots, checks them, and moves the root page with everything under it to the trash (about 4 minutes on Free).
 
-**Requirements**
-- **A dedicated, disposable Notion workspace.** The snapshot under test captures everything the connection can access, and the tests create and trash content. Use a workspace with nothing you need in it.
-- **An internal connection** in that workspace (Developer tools → Connections → New connection) with the capabilities **Read content**, **Update content** and **Insert content** (the snapshot itself only reads; the setup writes). Its token goes in `NOTION_TOKEN`.
-- **A root page, made in the UI before each run** (internal connections can't create top-level pages):
-  1. In the sidebar, click **+ New page** and give it any title.
-  2. On that page, click **•••** (top right) → **Connections**, select your connection, click **Confirm**.
-  3. Copy the page ID (the last 32 hexadecimal characters of the page link) into `NOTION2PG_LIVE_ROOT_PAGE_ID`.
-- **Optional UI-made fixtures** (their tests are skipped otherwise), on the root page:
-  4. Type `/full page database`, pick **Database – Full page**, title it exactly `UI Full Page`, and return to the root page.
-  5. Type `/linked`, pick **Linked view of data source**, choose `UI Full Page`.
-- **A PostgreSQL server** and its superuser URL in `NOTION2PG_TEST_ADMIN_URL` (three databases are created and dropped).
-- **Network access** to `api.notion.com`.
-- Optionally `NOTION2PG_LIVE_PLAN` (`free` by default; `business` or `enterprise` for a larger request budget).
+1. Use a dedicated, disposable workspace: the snapshot captures everything the connection can access.
+2. Create an internal connection there (Developer tools → Connections → New connection) with **Read**, **Update** and **Insert content**.
+3. Create a page in the sidebar (**+ New page**), then **•••** → **Connections** → select the connection → **Confirm**.
+4. Optional (their tests are skipped otherwise), on that page:
+   - type `/full page database`, pick **Database – Full page**, title it exactly `UI Full Page`, return to the page;
+   - type `/linked`, pick **Linked view of data source**, choose `UI Full Page`.
+5. Run, with the page ID (the last 32 hexadecimal characters of the page link) and a PostgreSQL superuser URL:
 
 ```bash
 NOTION_TOKEN="..." NOTION2PG_LIVE_ROOT_PAGE_ID="..." NOTION2PG_TEST_ADMIN_URL="postgresql://postgres:postgres@localhost/postgres" uv run pytest tests_live -v
 ```
 
-Without the three required variables, every live test is skipped. A test whose feature the workspace's plan lacks (archiving) is skipped too.
-
-**Teardown** runs even when setup or a test fails. It moves the root page to the trash, which takes every fixture under it with it (the UI-made ones included), checks that the root page is in the trash, and drops the PostgreSQL databases. The API can only move content to the trash: to delete it permanently, empty Notion's Trash in the UI. Search may still list trashed items for a while. Each run needs a new root page (step 1–3, and 4–5 for the optional fixtures).
+Repeat steps 3–4 before each run. `NOTION2PG_LIVE_PLAN` (default `free`) sets the request budget. The API can only trash content: empty Notion's Trash to delete it.
 
 ## Notion version
 **Last tested Notion-Version**: `2026-03-11`
+
+## Internal logic
+_Not needed to use the package._
+
+### Where discovery stops
+- A path ends at an object that is not found (404 on a lookup made only to extend discovery), or that is returned trashed or archived.
+- A database reached by ID is original only if it contains a discovered data source; otherwise it is recorded as linked.
