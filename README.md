@@ -9,7 +9,7 @@ _Python package to snapshot an entire Notion workspace to a PostgreSQL database.
 | Item | Reason |
 |---|---|
 | Media: `image`, `video`, `audio`, `file`, `pdf` blocks; `files` properties; page and database covers; file icons | Notion-hosted files: not retrievable; the API returns only URLs that expire after 1 h ([file object](https://developers.notion.com/reference/file-object)). External links: choice; keeping them while dropping hosted files means handling the two variants separately for each media type. |
-| Database templates | Choice. Friction: +1 paginated request per data source ([list templates](https://developers.notion.com/reference/list-data-source-templates)) plus a body fetch per template; |
+| Database templates | Choice. Friction: +1 paginated request per data source ([list templates](https://developers.notion.com/reference/list-data-source-templates)) plus a body fetch per template. |
 | Comments | Choice. Friction: ≥1 request per page and per block; only unresolved comments are returned ([list comments](https://developers.notion.com/reference/list-comments)). |
 | Automations, AI autofill | Not exposed by the [API](https://developers.notion.com/reference/intro). |
 | Trashed content | Choice. Friction: separate discovery ([search](https://developers.notion.com/reference/post-search) `filter.in_trash`) plus trash/restore state tracking. |
@@ -73,4 +73,4 @@ uv add notion2pg-bulk
 - References between entities (relations, parents, options, views → data sources) are stored as Notion IDs.
 
 ## Notion version
-**Last tested Notion-Version**: `2026-03-11` (note: `notion-client` 3.x defaults to `2025-09-03`).
+**Last tested Notion-Version**: `2026-03-11`
