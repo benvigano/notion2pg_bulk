@@ -218,5 +218,45 @@ Any fault that is not retried, or that persists after its retries, raises an exc
 ## Telemetry
 Every limiter wait and retry transition emits one JSON event on the `notion2pg_bulk` logger (the package itself only adds a `NullHandler`): `throttle_wait`, `retry_scheduled`, `retries_exhausted`, `request_failed` and `discovery_stopped` (a path ends: `reason` is `not_found` for a 404 on a lookup made only to extend discovery, `in_trash` or `archived` for an object returned out of scope). Each carries `level` (`info` for `throttle_wait` and `discovery_stopped`, `warning` for `retry_scheduled`, `error` for the other two; the record is logged at that level), `ts`, `propagation_id`, the locus (`phase`, `entity_type`, `entity_id`, `method`, `endpoint`), the fault's scalars (`http_status`, `code`, `rate_limit_reason`, `request_id`, `exception_type`) and the Notion error `message`. Headers, the token and request or response bodies are never included; strings are cut at 512 characters. The JSON Schema ships with the package as `notion2pg_bulk/telemetry.schema.json`; the event record is also attached to each log record as `record.telemetry`.
 
+## Tests
+There are two suites, kept apart:
+
+| Suite | Directory | Notion | PostgreSQL | Runs by default |
+|---|---|---|---|---|
+| Unit and integration | `tests/` | Faked (in-memory API behind `httpx.MockTransport`), no network | Real | Yes (`uv run pytest`) |
+| Live integration | `tests_live/` | A real, disposable Notion workspace | Real | No (`uv run pytest tests_live`) |
+
+### Unit and integration tests
+Requires a PostgreSQL server: set `NOTION2PG_TEST_ADMIN_URL` to a superuser URL (e.g. `postgresql://postgres:postgres@localhost/postgres`); each test creates and drops its own database. Without it, a throwaway cluster is started with the local `initdb` (not possible as root).
+
+```bash
+NOTION2PG_TEST_ADMIN_URL="postgresql://postgres:postgres@localhost/postgres" uv run pytest
+```
+
+### Live integration tests
+They check, against the real API, the assumptions the snapshot depends on that the Notion docs don't state exactly (trashed targets, linked and full-page databases as blocks, values over 25 items, discovery by ID, synced blocks, dashboards, query windowing, archived rows, dates, lock state, and that two snapshots are identical). Each run builds its own fixtures, takes three snapshots (two full ones, and one with row bodies off and chosen items removed from search results, so the other discovery paths must reach them), checks the results, and tears everything down. About 4 minutes on the Free plan.
+
+**Requirements**
+- **A dedicated, disposable Notion workspace.** The snapshot under test captures everything the connection can access, and the tests create and trash content. Use a workspace with nothing you need in it.
+- **An internal connection** in that workspace (Developer tools → Connections → New connection) with the capabilities **Read content**, **Update content** and **Insert content** (the snapshot itself only reads; the setup writes). Its token goes in `NOTION_TOKEN`.
+- **A root page, made in the UI before each run** (internal connections can't create top-level pages):
+  1. In the sidebar, click **+ New page** and give it any title.
+  2. On that page, click **•••** (top right) → **Connections**, select your connection, click **Confirm**.
+  3. Copy the page ID (the last 32 hexadecimal characters of the page link) into `NOTION2PG_LIVE_ROOT_PAGE_ID`.
+- **Optional UI-made fixtures** (their tests are skipped otherwise), on the root page:
+  4. Type `/full page database`, pick **Database – Full page**, title it exactly `UI Full Page`, and return to the root page.
+  5. Type `/linked`, pick **Linked view of data source**, choose `UI Full Page`.
+- **A PostgreSQL server** and its superuser URL in `NOTION2PG_TEST_ADMIN_URL` (three databases are created and dropped).
+- **Network access** to `api.notion.com`.
+- Optionally `NOTION2PG_LIVE_PLAN` (`free` by default; `business` or `enterprise` for a larger request budget).
+
+```bash
+NOTION_TOKEN="..." NOTION2PG_LIVE_ROOT_PAGE_ID="..." NOTION2PG_TEST_ADMIN_URL="postgresql://postgres:postgres@localhost/postgres" uv run pytest tests_live -v
+```
+
+Without the three required variables, every live test is skipped. A test whose feature the workspace's plan lacks (archiving) is skipped too.
+
+**Teardown** runs even when setup or a test fails. It moves the root page to the trash, which takes every fixture under it with it (the UI-made ones included), checks that the root page is in the trash, and drops the PostgreSQL databases. The API can only move content to the trash: to delete it permanently, empty Notion's Trash in the UI. Search may still list trashed items for a while. Each run needs a new root page (step 1–3, and 4–5 for the optional fixtures).
+
 ## Notion version
 **Last tested Notion-Version**: `2026-03-11`
