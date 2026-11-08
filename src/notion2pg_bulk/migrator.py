@@ -5,20 +5,17 @@ Main migration class for Notion workspace to PostgreSQL migration.
 import json
 import re
 from typing import Dict, List, Any, Optional
-from tabulate import tabulate
 from notion_client import Client, RetryOptions
 from sqlalchemy import Engine, MetaData, Table, text
 from sqlalchemy.dialects.postgresql import insert
 
 from .schema_mapper import NotionPropertyMapper
-from .progress_tracker import ProgressTracker
 from .rate_limiter import RateLimiter
 
 # Fixed column names in database_content tables; user properties may not use these.
 _BUILTIN_COLUMN_NAMES = frozenset({
     "notion_id", "created_time", "last_edited_time", "created_by",
     "last_edited_by", "cover", "icon", "url", "page_content",
-    "in_trash", "archived",
 })
 
 
@@ -29,11 +26,7 @@ class NotionMigrator:
         self,
         notion_token: str,
         db_connection: Engine,
-        interactive_mode: bool = True,
-        include_trashed: bool = False,
         fetch_page_content: bool = False,
-        include_standalone_pages: bool = True,
-        ignored_unsupported_property_types: Optional[List[str]] = None,
     ):
         """
         Initialize the migrator.
@@ -41,21 +34,12 @@ class NotionMigrator:
         Args:
             notion_token: Notion integration token
             db_connection: SQLAlchemy engine for PostgreSQL connection
-            interactive_mode: Enable interactive mode with progress bars and confirmation
-            include_trashed: Include archived/trashed items and add in_trash/archived columns
             fetch_page_content: Fetch and store each page's full block tree in a
                 ``page_content`` JSONB column.  Requires one or more extra API calls
                 per database row (blocks.children.list, recursively), which
                 significantly slows migration for large databases.  When False (the
                 default) the column is omitted entirely and only the structured
                 property data available from the bulk query is stored.
-            include_standalone_pages: Discover and migrate standalone pages (pages that
-                are not rows inside a Notion database) together with their full recursive
-                block tree into the ``standalone_pages`` schema.  Enabled by default.
-                Disable to skip the workspace-wide page search and all block fetching for
-                standalone pages, which can noticeably reduce migration time for large
-                workspaces with many pages.
-            ignored_unsupported_property_types: Unsupported property types to skip silently
         """
         self.notion = Client(
             auth=notion_token,
@@ -68,14 +52,7 @@ class NotionMigrator:
             ),
         )
         self.db_engine = db_connection
-        self.interactive_mode = interactive_mode
-        self.include_trashed = include_trashed
         self.fetch_page_content = fetch_page_content
-        self.include_standalone_pages = include_standalone_pages
-        self.ignored_unsupported_property_types = {
-            t.lower() for t in (ignored_unsupported_property_types or [])
-        }
-        self.progress = ProgressTracker(interactive_mode)
         self.rate_limiter = RateLimiter(requests_per_second=2.5)
         self.metadata = MetaData()
         self.property_mapper = NotionPropertyMapper()
@@ -87,9 +64,6 @@ class NotionMigrator:
         self.property_meta_tables: Dict[str, Table] = {}
         self.view_tables: Dict[str, Table] = {}
 
-        # Track skipped properties for the migration plan summary
-        self.skipped_properties: List[Dict[str, str]] = []
-
         # Standalone pages discovered via workspace search
         self.standalone_pages: List[Dict] = []
 
@@ -99,85 +73,27 @@ class NotionMigrator:
 
     def run(self) -> None:
         """Run the complete migration process."""
-        try:
-            self._test_database_connection()
-            self._require_empty_database()
-            self._test_notion_connection()
+        self._test_database_connection()
+        self._require_empty_database()
+        self._test_notion_connection()
 
-            # Phase 1: Discover Notion databases
-            self.progress.start_phase("🔎 Discovering Notion databases", None)
-            databases = self._get_databases()
-            self.progress.finish_phase()
+        databases = self._get_databases()
+        if not databases:
+            raise ValueError(
+                "No Notion databases found. Share databases with your integration "
+                "(Notion integration settings → Access)."
+            )
+        self._check_table_name_collisions(databases)
+        self.standalone_pages = self._discover_standalone_pages()
 
-            if not databases:
-                raise ValueError(
-                    "No Notion databases found. Share databases with your integration "
-                    "(Notion integration settings → Access)."
-                )
-
-            self._check_table_name_collisions(databases)
-
-            # Phase 2: Discover standalone pages (skipped when include_standalone_pages=False)
-            if self.include_standalone_pages:
-                self.progress.start_phase("🔎 Discovering standalone pages", None)
-                self.standalone_pages = self._discover_standalone_pages()
-                self.progress.finish_phase()
-
-            # Show migration plan and ask for confirmation
-            if self.interactive_mode:
-                self._show_migration_plan(databases)
-                if not self._get_user_confirmation():
-                    self.progress.log("Migration cancelled by user.")
-                    return
-            else:
-                self._warn_about_unignored_unsupported_properties(databases)
-
-            # Phase 3: Create PostgreSQL schemas and table definitions
-            self.progress.start_phase("Creating PostgreSQL schema", len(databases))
-            for db_info in databases:
-                self._create_table_schema(db_info)
-                self.progress.update(1)
-            self.progress.finish_phase()
-
-            # Phase 4: Migrate database row data
-            self.progress.start_phase("Migrating database data", len(databases))
-            for db_info in databases:
-                self._migrate_database_data(db_info)
-                self.progress.update(1)
-            self.progress.finish_phase()
-
-            # Phase 5: Migrate database views
-            self.progress.start_phase("Migrating database views", len(databases))
-            total_views = 0
-            for db_info in databases:
-                total_views += self._migrate_views(db_info)
-                self.progress.update(1)
-            self.progress.finish_phase()
-
-            # Phase 6: Migrate standalone pages
-            if self.include_standalone_pages and self.standalone_pages:
-                self.progress.start_phase(
-                    "Migrating standalone pages", len(self.standalone_pages)
-                )
-                self._migrate_standalone_pages()
-                self.progress.finish_phase()
-
-            if self.interactive_mode:
-                parts = []
-                if total_views:
-                    parts.append(f"{total_views} view(s) saved to database_views")
-                if self.standalone_pages:
-                    parts.append(
-                        f"{len(self.standalone_pages)} standalone page(s) migrated to "
-                        "standalone_pages"
-                    )
-                if parts:
-                    self.progress.log("✅ Migration completed — " + "; ".join(parts))
-                else:
-                    self.progress.log("✅ Migration completed successfully")
-
-        finally:
-            self.progress.cleanup()
+        for db_info in databases:
+            self._create_table_schema(db_info)
+        for db_info in databases:
+            self._migrate_database_data(db_info)
+        for db_info in databases:
+            self._migrate_views(db_info)
+        if self.standalone_pages:
+            self._migrate_standalone_pages()
 
     # ------------------------------------------------------------------
     # Pre-flight checks
@@ -242,14 +158,10 @@ class NotionMigrator:
         """Test PostgreSQL database connection."""
         with self.db_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        if self.interactive_mode:
-            self.progress.log("🔗 Connected to PostgreSQL database successfully")
 
     def _test_notion_connection(self) -> None:
         """Test Notion API connection."""
         self.rate_limiter.rate_limited_call(self.notion.users.me)
-        if self.interactive_mode:
-            self.progress.log("🔗 Successfully connected to Notion API")
 
     # ------------------------------------------------------------------
     # Discovery
@@ -259,7 +171,6 @@ class NotionMigrator:
         """Discover all accessible data sources and retrieve their full schemas."""
         raw_data_sources: List[Dict[str, Any]] = []
         start_cursor = None
-        request_count = 0
 
         while True:
             response = self.rate_limiter.rate_limited_call(
@@ -267,17 +178,10 @@ class NotionMigrator:
                 filter={"property": "object", "value": "data_source"},
                 start_cursor=start_cursor,
             )
-            request_count += 1
-            self.progress.update(1)
 
             for item in response.get("results", []):
-                if not self.include_trashed and (
-                    item.get("in_trash") or item.get("archived")
-                ):
-                    continue
                 raw_data_sources.append(item)
 
-            self.progress.set_postfix(found=len(raw_data_sources), requests=request_count)
 
             if not response.get("has_more", False):
                 break
@@ -303,13 +207,6 @@ class NotionMigrator:
                 database_id=database_id,
             )
 
-            request_count += 2
-            self.progress.update(2)
-            self.progress.set_postfix(
-                found=len(raw_data_sources),
-                details=f"{i}/{len(raw_data_sources)}",
-                requests=request_count,
-            )
 
             title = self._extract_data_source_title(data_source_details, database_details)
             detailed.append({
@@ -334,18 +231,10 @@ class NotionMigrator:
                     return text.strip()
         return f"Untitled_{data_source['id'][:8]}"
 
-    def _extract_database_title(self, database: Dict[str, Any]) -> str:
-        """Extract the plain-text title from a Notion database object."""
-        title_property = database.get("title", [])
-        if title_property:
-            return "".join(item.get("plain_text", "") for item in title_property)
-        return f"Untitled_{database['id'][:8]}"
-
     def _discover_standalone_pages(self) -> List[Dict]:
         """Discover all standalone pages (non-database-row pages) accessible to the integration."""
         pages = []
         start_cursor = None
-        request_count = 0
 
         while True:
             kwargs: Dict[str, Any] = {
@@ -357,8 +246,6 @@ class NotionMigrator:
             response = self.rate_limiter.rate_limited_call(
                 self.notion.search, **kwargs
             )
-            request_count += 1
-            self.progress.update(1)
 
             for page in response.get("results", []):
                 parent = page.get("parent", {})
@@ -368,10 +255,6 @@ class NotionMigrator:
                 if parent_type in ("database_id", "data_source_id"):
                     continue
 
-                if not self.include_trashed and (
-                    page.get("in_trash") or page.get("archived")
-                ):
-                    continue
 
                 # Determine parent_id
                 if parent_type == "workspace":
@@ -402,13 +285,9 @@ class NotionMigrator:
                     "icon": json.dumps(page["icon"]) if page.get("icon") else None,
                     "url": page.get("url"),
                 }
-                if self.include_trashed:
-                    entry["in_trash"] = page.get("in_trash", False)
-                    entry["archived"] = page.get("archived", False)
 
                 pages.append(entry)
 
-            self.progress.set_postfix(found=len(pages), requests=request_count)
 
             if not response.get("has_more", False):
                 break
@@ -419,206 +298,6 @@ class NotionMigrator:
     # ------------------------------------------------------------------
     # Migration plan UI
     # ------------------------------------------------------------------
-
-    def _show_migration_plan(self, databases: List[Dict]) -> None:
-        """Print the migration plan table to the console."""
-        self.progress.log("\nMigration Plan:")
-        self.progress.log("=" * 70)
-        self.progress.log(f"\nNotion databases to migrate: {len(databases)}")
-        self.progress.log("")
-
-        data = []
-        for db_info in databases:
-            title = db_info["title"]
-            details = db_info["details"]
-            properties = details["properties"]
-
-            formula_count = sum(1 for p in properties.values() if p.get("type") == "formula")
-            rollup_count = sum(1 for p in properties.values() if p.get("type") == "rollup")
-            relation_count = sum(1 for p in properties.values() if p.get("type") == "relation")
-            plain_count = sum(
-                1 for p in properties.values()
-                if p.get("type") not in {"formula", "rollup", "relation"}
-                and self._is_property_type_supported(p.get("type"))
-            )
-            prop_desc_count = sum(
-                1 for p in properties.values()
-                if (p.get("description") or "").strip()
-            )
-            db_has_description = "✓" if any(
-                item.get("plain_text", "").strip()
-                for item in details.get("description", [])
-            ) else "-"
-
-            table_name = self._clean_table_name(title)
-            data.append({
-                "Notion Database": f"'{title}'",
-                "Destination Table": f"database_content.'{table_name}'",
-                "DB Desc.": db_has_description,
-                "Properties": plain_count,
-                "Relations": relation_count,
-                "Formulas": formula_count,
-                "Rollups": rollup_count,
-                "Total": plain_count + relation_count + formula_count + rollup_count,
-                "Prop. Desc.": prop_desc_count,
-            })
-
-        headers = [
-            "Notion Database", "Destination Table", "DB Desc.",
-            "Properties", "Relations", "Formulas", "Rollups", "Total", "Prop. Desc.",
-        ]
-        table_data = [
-            [
-                row["Notion Database"], row["Destination Table"], row["DB Desc."],
-                row["Properties"], row["Relations"], row["Formulas"],
-                row["Rollups"], row["Total"], row["Prop. Desc."],
-            ]
-            for row in data
-        ]
-
-        pretty_table = tabulate(
-            table_data,
-            headers=headers,
-            tablefmt="grid",
-            maxcolwidths=[25, 32, 8, 10, 9, 8, 8, 6, 10],
-        )
-        self.progress.log(pretty_table)
-
-        if self.standalone_pages:
-            self.progress.log(
-                f"\nStandalone pages discovered: {len(self.standalone_pages)}"
-                " (block content will be extracted recursively)"
-            )
-
-        self._show_migration_analysis(databases)
-
-        self.progress.log("")
-        self.progress.log("=" * 70)
-
-    def _get_user_confirmation(self) -> bool:
-        """Ask the user for confirmation before proceeding."""
-        try:
-            response = input("\nProceed with migration? (y/N): ").strip().lower()
-            return response in ["y", "yes"]
-        except (EOFError, KeyboardInterrupt):
-            return False
-
-    def _show_migration_analysis(self, databases: List[Dict]) -> None:
-        """Print skipped properties and out-of-scope relation targets."""
-        from collections import defaultdict
-
-        unsupported = self._collect_unignored_unsupported_properties(databases)
-
-        if unsupported:
-            self.progress.log("\nℹ️ Skipped fields (unsupported property type):")
-            by_db: Dict[str, List] = defaultdict(list)
-            db_ids: Dict[str, str] = {}
-            for prop in unsupported:
-                by_db[prop["original_db_name"]].append(f"{prop['property']} ({prop['type']})")
-                db_ids[prop["original_db_name"]] = prop["db_id"]
-            for db_name, props in by_db.items():
-                self.progress.log(f"- From Table: '{db_name}' ({db_ids[db_name]})")
-                for p in props:
-                    self.progress.log(f"  - Field: '{p}'")
-            self.progress.log(f"Total: {len(unsupported)} field(s) will be skipped")
-            self.progress.log("")
-
-        self._show_missing_relations(databases)
-
-    def _collect_unignored_unsupported_properties(self, databases: List[Dict]) -> List[Dict]:
-        """Return unsupported properties that are not explicitly ignored."""
-        unsupported: List[Dict] = []
-        for db_info in databases:
-            db_id = db_info["id"]
-            title = db_info["title"]
-            for prop_name, prop_config in db_info["details"]["properties"].items():
-                prop_type = prop_config.get("type") or "unknown"
-                if prop_type in {"formula", "rollup"}:
-                    continue
-                if self._is_property_type_supported(prop_type):
-                    continue
-                if prop_type.lower() in self.ignored_unsupported_property_types:
-                    continue
-                unsupported.append({
-                    "property": prop_name,
-                    "type": prop_type,
-                    "original_db_name": title,
-                    "db_id": db_id,
-                })
-        return unsupported
-
-    def _warn_about_unignored_unsupported_properties(self, databases: List[Dict]) -> None:
-        """Warn in non-interactive mode when unsupported properties are not ignored."""
-        unsupported = self._collect_unignored_unsupported_properties(databases)
-        if not unsupported:
-            return
-
-        print("⚠️  Unsupported Notion properties will be skipped:")
-        for prop in unsupported:
-            print(
-                "  - "
-                f"{prop['original_db_name']}.{prop['property']} "
-                f"({prop['type']}, data source {prop['db_id']})"
-            )
-        print(
-            "Migration will continue. Use the matching ignore flag to suppress "
-            "known unsupported property types."
-        )
-
-    def _is_property_type_supported(self, property_type: str) -> bool:
-        """Return True if the property type is migrated to a column."""
-        supported_types = {
-            "title", "rich_text", "number", "select", "multi_select", "status",
-            "date", "checkbox", "url", "email", "phone_number",
-            "unique_id", "relation", "people", "files",
-            "created_time", "created_by", "last_edited_time", "last_edited_by",
-        }
-        return property_type in supported_types
-
-    def _show_missing_relations(self, databases: List[Dict]) -> None:
-        """Warn about relation properties pointing to databases outside the migration scope."""
-        from collections import defaultdict
-
-        migrated_ids = set()
-        for db in databases:
-            migrated_ids.add(db["id"])
-            migrated_ids.add(db["database_id"])
-
-        issues = []
-        for db_info in databases:
-            for prop_name, prop_config in db_info["details"]["properties"].items():
-                if prop_config.get("type") != "relation":
-                    continue
-                relation_config = prop_config.get("relation", {})
-                target_id = (
-                    relation_config.get("data_source_id")
-                    or relation_config.get("database_id")
-                )
-                if target_id and target_id not in migrated_ids:
-                    target_name = self._get_database_name_by_id(target_id)
-                    issues.append({
-                        "source_field": prop_name,
-                        "source_table_original": db_info["title"],
-                        "source_db_id": db_info["id"],
-                        "target_db_name": target_name or f"Unknown ({target_id})",
-                        "target_db_id": target_id,
-                    })
-
-        if issues:
-            self.progress.log("\nℹ️ Table(s) referenced in relation fields, but not found:")
-            by_target = defaultdict(list)
-            for issue in issues:
-                by_target[issue["target_db_name"]].append(issue)
-            for target_name, target_issues in by_target.items():
-                target_db_id = target_issues[0]["target_db_id"]
-                self.progress.log(f"- Table: '{target_name}' ({target_db_id})")
-                self.progress.log("  - Referenced by:")
-                for issue in target_issues:
-                    self.progress.log(
-                        f"    - Field: '{issue['source_field']}' of table "
-                        f"'{issue['source_table_original']}' ({issue['source_db_id']})"
-                    )
-                self.progress.log("")
 
     # ------------------------------------------------------------------
     # Schema creation
@@ -650,9 +329,6 @@ class NotionMigrator:
         ]
         if self.fetch_page_content:
             content_columns.append(Column("page_content", JSONB))
-        if self.include_trashed:
-            content_columns.append(Column("in_trash", Boolean, nullable=False, server_default="false"))
-            content_columns.append(Column("archived", Boolean, nullable=False, server_default="false"))
 
         lookup_table_configs = []
         computed_properties = []
@@ -663,14 +339,6 @@ class NotionMigrator:
             prop_type = prop_config.get("type")
 
             if prop_type in ["formula", "rollup"]:
-                self.skipped_properties.append({
-                    "table": table_name,
-                    "property": prop_name,
-                    "type": prop_type,
-                    "reason": "Computed property — definition stored in database_computed_fields",
-                    "original_db_name": title,
-                    "db_id": data_source_id,
-                })
                 computed_properties.append((prop_name, prop_type, prop_config))
                 continue
 
@@ -680,15 +348,6 @@ class NotionMigrator:
                 content_columns.append(column)
                 non_computed_props.append((prop_name, prop_config, prop_col_name))
             else:
-                if (prop_type or "unknown").lower() not in self.ignored_unsupported_property_types:
-                    self.skipped_properties.append({
-                        "table": table_name,
-                        "property": prop_name,
-                        "type": prop_type,
-                        "reason": "Unsupported property type",
-                        "original_db_name": title,
-                        "db_id": data_source_id,
-                    })
                 non_computed_props.append((prop_name, prop_config, None))
 
             if self.property_mapper.needs_lookup_table(prop_config):
@@ -775,9 +434,6 @@ class NotionMigrator:
             Column("is_inline", Boolean),
             Column("data_sources", JSONB),
         ]
-        if self.include_trashed:
-            meta_columns.append(Column("in_trash", Boolean))
-            meta_columns.append(Column("archived", Boolean))
 
         meta_table = Table(
             table_name, self.metadata, *meta_columns, schema="database_meta"
@@ -827,9 +483,6 @@ class NotionMigrator:
             "is_inline": database_details.get("is_inline"),
             "data_sources": json.dumps(database_details.get("data_sources") or []),
         }
-        if self.include_trashed:
-            meta_row["in_trash"] = database_details.get("in_trash", False)
-            meta_row["archived"] = database_details.get("archived", False)
 
         with self.db_engine.connect() as conn:
             conn.execute(meta_table.insert(), meta_row)
@@ -852,7 +505,6 @@ class NotionMigrator:
                 conn.execute(property_meta_table.insert(), prop_meta_rows)
                 conn.commit()
 
-        self.progress.set_postfix(table=table_name)
 
     # ------------------------------------------------------------------
     # Data migration
@@ -868,38 +520,28 @@ class NotionMigrator:
         total_pages = 0
         page_batches = 0
 
-        self.progress.start_detail(f"↳ {table.name} rows", unit="pages")
-        try:
-            while True:
-                body: Dict[str, Any] = {"page_size": 100}
-                if start_cursor:
-                    body["start_cursor"] = start_cursor
+        while True:
+            body: Dict[str, Any] = {"page_size": 100}
+            if start_cursor:
+                body["start_cursor"] = start_cursor
 
-                response = self.rate_limiter.rate_limited_call(
-                    self.notion.request,
-                    f"data_sources/{data_source_id}/query",
-                    "POST",
-                    body=body,
-                )
-                page_batches += 1
+            response = self.rate_limiter.rate_limited_call(
+                self.notion.request,
+                f"data_sources/{data_source_id}/query",
+                "POST",
+                body=body,
+            )
+            page_batches += 1
 
-                pages = response.get("results", [])
-                if pages:
-                    self._insert_pages_batch(table, pages, properties)
-                    total_pages += len(pages)
+            pages = response.get("results", [])
+            if pages:
+                self._insert_pages_batch(table, pages, properties)
+                total_pages += len(pages)
 
-                self.progress.set_detail_postfix(
-                    batches=page_batches,
-                    fetched=total_pages,
-                    has_more=response.get("has_more", False),
-                )
-                self.progress.set_postfix(table=table.name, pages=total_pages)
 
-                if not response.get("has_more", False):
-                    break
-                start_cursor = response.get("next_cursor")
-        finally:
-            self.progress.finish_detail()
+            if not response.get("has_more", False):
+                break
+            start_cursor = response.get("next_cursor")
 
         self._populate_lookup_tables(table.name, properties)
         self._add_select_foreign_keys(table.name, properties)
@@ -951,9 +593,6 @@ class NotionMigrator:
                 conn.execute(stmt)
                 conn.commit()
 
-        self.progress.set_postfix(
-            table=self._clean_table_name(db_info["title"]), views=len(rows)
-        )
         return len(rows)
 
     def _insert_pages_batch(
@@ -965,12 +604,6 @@ class NotionMigrator:
 
         rows = []
         for page in pages:
-            # Skip trashed rows unless include_trashed is set
-            if not self.include_trashed and (
-                page.get("in_trash") or page.get("archived")
-            ):
-                self.progress.update_detail(1)
-                continue
 
             row_data: Dict[str, Any] = {
                 "notion_id": page["id"],
@@ -982,9 +615,6 @@ class NotionMigrator:
                 "icon": json.dumps(page["icon"]) if page.get("icon") else None,
                 "url": page.get("url"),
             }
-            if self.include_trashed:
-                row_data["in_trash"] = page.get("in_trash", False)
-                row_data["archived"] = page.get("archived", False)
 
             page_properties = page.get("properties", {})
             for prop_name, prop_config in properties.items():
@@ -1013,7 +643,6 @@ class NotionMigrator:
                 )
 
             rows.append(row_data)
-            self.progress.update_detail(1)
 
         if rows:
             with self.db_engine.connect() as conn:
@@ -1100,20 +729,15 @@ class NotionMigrator:
             )
             constraint_name = f"fk_{table_name}_{prop_col}"
 
-            try:
-                with self.db_engine.connect() as conn:
-                    conn.execute(text(f"""
-                        ALTER TABLE database_content.{table_name}
-                        ADD CONSTRAINT {constraint_name}
-                        FOREIGN KEY ({prop_col})
-                        REFERENCES database_select_options.{option_table_name}(value)
-                        ON DELETE SET NULL
-                    """))
-                    conn.commit()
-            except Exception as e:
-                self.progress.log(
-                    f"⚠️  Failed to create foreign key for {table_name}.{prop_col}: {e}"
-                )
+            with self.db_engine.connect() as conn:
+                conn.execute(text(f"""
+                    ALTER TABLE database_content.{table_name}
+                    ADD CONSTRAINT {constraint_name}
+                    FOREIGN KEY ({prop_col})
+                    REFERENCES database_select_options.{option_table_name}(value)
+                    ON DELETE SET NULL
+                """))
+                conn.commit()
 
     # ------------------------------------------------------------------
     # Page content (lossless JSONB block tree)
@@ -1181,9 +805,6 @@ class NotionMigrator:
             icon             JSONB,
             url              TEXT
         """
-        if self.include_trashed:
-            page_tree_cols += ",\n            in_trash BOOLEAN NOT NULL DEFAULT FALSE"
-            page_tree_cols += ",\n            archived BOOLEAN NOT NULL DEFAULT FALSE"
 
         block_content_cols = """
             block_id        TEXT PRIMARY KEY,
@@ -1250,9 +871,6 @@ class NotionMigrator:
                 "icon": page.get("icon"),
                 "url": page.get("url"),
             }
-            if self.include_trashed:
-                insert_data["in_trash"] = page.get("in_trash", False)
-                insert_data["archived"] = page.get("archived", False)
 
             cols = ", ".join(insert_data.keys())
             params = ", ".join(f":{k}" for k in insert_data.keys())
@@ -1267,8 +885,6 @@ class NotionMigrator:
 
             self._fetch_blocks_recursive(page_id, page_id, None, 0)
 
-            self.progress.update(1)
-            self.progress.set_postfix(page=page["title"][:30])
 
     def _fetch_blocks_recursive(
         self,
@@ -1365,33 +981,3 @@ class NotionMigrator:
         if len(cleaned) > 50:
             cleaned = cleaned[:50].rstrip("_")
         return f"property_{cleaned.lower()}"
-
-    def _get_database_name_by_id(self, notion_id: str) -> Optional[str]:
-        """Retrieve a database or data source title by Notion ID."""
-        try:
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.databases.retrieve,
-                database_id=notion_id,
-            )
-            return self._extract_database_title(response)
-        except Exception:
-            pass
-        try:
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.request,
-                f"data_sources/{notion_id}",
-                "GET",
-            )
-            database_id = (response.get("parent") or {}).get("database_id")
-            if database_id:
-                database = self.rate_limiter.rate_limited_call(
-                    self.notion.databases.retrieve,
-                    database_id=database_id,
-                )
-                return self._extract_data_source_title(response, database)
-            title_property = response.get("title", [])
-            if title_property:
-                return "".join(item.get("plain_text", "") for item in title_property)
-        except Exception:
-            pass
-        return None
