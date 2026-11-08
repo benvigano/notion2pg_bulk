@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fake_notion import block, data_source, new_id, page, paragraph, title_value, view
+from fake_notion import block, data_source, database, new_id, page, paragraph, title_value, view
 from helpers import run_snapshot
 from test_rows import TITLE
 from test_snapshot import query
@@ -133,3 +133,53 @@ def test_page_and_database_fields(database_url, clock):
                               "description FROM notion.databases WHERE database_id = :d", d=ws.projects_db)
     assert d[:5] == (True, True, True, "page_id", ws.standalone_page)
     assert d[5][0]["plain_text"] == "A description"
+
+
+def _missed_source(ws, title="Hidden", database_id=None):
+    hidden_db, hidden_ds, row_id = database_id or new_id(), new_id(), new_id()
+    ws.fake.add_database(database(hidden_db, f"{title} DB", [hidden_ds]))
+    ws.fake.add_data_source(data_source(hidden_ds, hidden_db, title, {"Name": TITLE}), searchable=False)
+    ws.fake.add_row(hidden_ds, page(row_id, {"type": "data_source_id", "data_source_id": hidden_ds, "database_id": hidden_db},
+                                    {"Name": title_value("found")}))
+    ws.fake.set_children(row_id, [paragraph("hidden row body")])
+    return hidden_db, hidden_ds, row_id
+
+
+def test_original_database_missed_by_search_is_found_through_its_block(database_url, clock):
+    ws = build_workspace()
+    hidden_db, hidden_ds, row_id = _missed_source(ws)
+    hidden_view = new_id()
+    ws.fake.add_view(view(hidden_view, hidden_db, hidden_ds))
+    ws.fake.children[ws.standalone_page].append(block("child_database", {"title": "Hidden DB"}, block_id=hidden_db))
+    run_snapshot(ws.fake, database_url, clock)
+    assert query(database_url, 'SELECT _page_id::text FROM rows."Hidden"')[0][0] == row_id
+    [db] = query(database_url, "SELECT is_linked, title FROM notion.databases WHERE database_id = :d", d=hidden_db)
+    assert db[0] is False and db[1][0]["plain_text"] == "Hidden DB"
+    assert query(database_url, "SELECT count(*) FROM notion.blocks WHERE page_id = :p", p=row_id)[0][0] == 1
+    assert query(database_url, "SELECT data_source_id::text FROM notion.views WHERE view_id = :v", v=hidden_view)[0][0] == hidden_ds
+    assert query(database_url, "SELECT table_name FROM notion.catalog_tables WHERE data_source_id = :d", d=hidden_ds)[0][0] == "Hidden"
+
+
+def test_linked_block_showing_a_missed_data_source_brings_in_its_owner(database_url, clock):
+    ws = build_workspace()
+    owner_db, hidden_ds, row_id = _missed_source(ws)
+    linked = new_id()
+    ws.fake.add_view(view(new_id(), linked, hidden_ds))
+    ws.fake.children[ws.standalone_page].append(block("child_database", {"title": "Linked view"}, block_id=linked))
+    run_snapshot(ws.fake, database_url, clock, row_bodies=False)
+    found = dict(query(database_url, "SELECT database_id::text, is_linked FROM notion.databases"))
+    assert found[owner_db] is False and found[linked] is True
+    assert query(database_url, 'SELECT count(*) FROM rows."Hidden"')[0][0] == 1
+    assert query(database_url, "SELECT count(*) FROM notion.blocks WHERE page_id = :p", p=row_id)[0][0] == 0
+
+
+def test_missed_data_source_still_obeys_naming_checks(database_url, clock):
+    import pytest
+    from notion2pg_bulk.errors import SnapshotIntegrityError
+
+    ws = build_workspace()
+    hidden_db, hidden_ds, _ = _missed_source(ws, title="Projects")
+    ws.fake.add_view(view(new_id(), hidden_db, hidden_ds))
+    ws.fake.children[ws.standalone_page].append(block("child_database", {"title": "Dup"}, block_id=hidden_db))
+    with pytest.raises(SnapshotIntegrityError):
+        run_snapshot(ws.fake, database_url, clock)

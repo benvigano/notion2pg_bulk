@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections import deque
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import Connection, Engine, Table, create_engine, text
 from sqlalchemy.engine import make_url
@@ -15,7 +15,7 @@ from .errors import SnapshotIntegrityError
 from .naming import check_column_names, check_workspace_names
 from .notion_api import NotionAPI
 from .notion_http import NotionHTTP, Plan
-from .records import DatabaseRecord, DataSourceRecord, PageRecord
+from .records import BlockRecord, DatabaseRecord, DataSourceRecord, PageRecord, ViewRecord
 from .target import assert_target_empty
 from .telemetry import Telemetry, scope
 
@@ -89,58 +89,72 @@ class _Snapshot:
         self.row_bodies = row_bodies
         self.data_sources: Dict[str, DataSourceRecord] = {}
         self.databases: Dict[str, DatabaseRecord] = {}
+        self.linked: Dict[str, DatabaseRecord] = {}
+        self.views: Dict[str, ViewRecord] = {}
         self.row_tables: Dict[str, Table] = {}
         self.standalone_pages: Dict[str, PageRecord] = {}
         self.row_ids: Dict[str, List[str]] = {}
 
     def run(self) -> None:
         with scope(phase="discovery"):
-            self._discover()
+            self._add_data_sources(fetch.discover_data_source_ids(self.api))
+            for page in fetch.discover_standalone_pages(self.api):
+                self.standalone_pages[page.page_id] = page
+            check_workspace_names(self.data_sources.values())
         with scope(phase="schema"):
-            self._load_schema()
+            load.create_shared_schema(self.conn)
+            self._load_schema(list(self.databases.values()), list(self.data_sources.values()))
+            load.load_pages(self.conn, self.standalone_pages.values())
         with scope(phase="rows"):
             for data_source in list(self.data_sources.values()):
-                with scope(entity_type="data_source", entity_id=data_source.data_source_id):
-                    self._load_rows(data_source)
+                self._load_rows(data_source)
         with scope(phase="views"):
-            self._load_views()
+            self._load_views(fetch.list_view_ids(self.api, list(self.data_sources), list(self.databases)))
         with scope(phase="bodies"):
             self._load_bodies()
 
-    def _discover(self) -> None:
-        pending = fetch.discover_data_source_ids(self.api)
+    def _add_data_sources(self, data_source_ids: Iterable[str]) -> Tuple[List[DataSourceRecord], List[DatabaseRecord]]:
+        """Fetch data sources and their databases, following each database's data source list.
+
+        :returns: The data sources and databases that were not known yet.
+        """
+        new_sources: List[DataSourceRecord] = []
+        new_databases: List[DatabaseRecord] = []
+        pending = [data_source_id for data_source_id in dict.fromkeys(data_source_ids) if data_source_id not in self.data_sources]
         while pending:
             for data_source_id in pending:
                 with scope(entity_type="data_source", entity_id=data_source_id):
-                    self.data_sources[data_source_id] = fetch.fetch_data_source(self.api, data_source_id)
+                    record = fetch.fetch_data_source(self.api, data_source_id)
+                self.data_sources[data_source_id] = record
+                new_sources.append(record)
             listed: Dict[str, None] = {}
-            for database_id in fetch.database_ids_of(self.data_sources.values()):
+            for database_id in fetch.database_ids_of(new_sources):
                 if database_id in self.databases:
                     continue
                 with scope(entity_type="database", entity_id=database_id):
-                    self.databases[database_id], held = fetch.fetch_database(self.api, database_id)
+                    database, held = fetch.fetch_database(self.api, database_id)
+                self.databases[database_id] = database
+                self.linked.pop(database_id, None)
+                new_databases.append(database)
                 listed.update((data_source_id, None) for data_source_id in held)
             pending = [data_source_id for data_source_id in listed if data_source_id not in self.data_sources]
-        for page in fetch.discover_standalone_pages(self.api):
-            self.standalone_pages[page.page_id] = page
-        check_workspace_names(self.data_sources.values())
+        return new_sources, new_databases
 
-    def _load_schema(self) -> None:
-        load.create_shared_schema(self.conn)
-        load.load_databases(self.conn, self.databases.values())
-        for data_source in self.data_sources.values():
+    def _load_schema(self, databases: List[DatabaseRecord], data_sources: List[DataSourceRecord]) -> None:
+        load.load_databases(self.conn, databases)
+        for data_source in data_sources:
             self.row_tables[data_source.data_source_id] = load.load_data_source(self.conn, data_source)
-        load.load_pages(self.conn, self.standalone_pages.values())
 
     def _load_rows(self, data_source: DataSourceRecord) -> None:
         ds_id = data_source.data_source_id
         ids = self.row_ids.setdefault(ds_id, [])
-        for objects in fetch.query_rows(self.api, ds_id):
-            if any(fetch.schema_mismatches(obj, data_source) for obj in objects):
-                data_source = self._refresh_schema(data_source)
-            rows = [fetch.parse_row(self.api, obj, data_source) for obj in objects]
-            load.load_rows(self.conn, data_source, self.row_tables[ds_id], rows)
-            ids.extend(row.page.page_id for row in rows)
+        with scope(entity_type="data_source", entity_id=ds_id):
+            for objects in fetch.query_rows(self.api, ds_id):
+                if any(fetch.schema_mismatches(obj, data_source) for obj in objects):
+                    data_source = self._refresh_schema(data_source)
+                rows = [fetch.parse_row(self.api, obj, data_source) for obj in objects]
+                load.load_rows(self.conn, data_source, self.row_tables[ds_id], rows)
+                ids.extend(row.page.page_id for row in rows)
 
     def _refresh_schema(self, data_source: DataSourceRecord) -> DataSourceRecord:
         """Re-read a data source whose rows disagree with its schema, and extend its tables.
@@ -164,35 +178,88 @@ class _Snapshot:
         self.row_tables[merged.data_source_id] = load.load_data_source(self.conn, merged)
         return merged
 
-    def _load_views(self) -> None:
-        views = fetch.fetch_views(self.api, list(self.data_sources), list(self.databases))
-        load.load_views(self.conn, views)
-        load.load_databases(self.conn, fetch.linked_databases_from_views(views, self.databases))
+    def _load_views(self, view_ids: Iterable[str]) -> None:
+        """Retrieve and load the views not fetched yet, and record the linked
+        containers they reveal (by ID only, never replacing a block-derived record).
+        """
+        fetched = [fetch.fetch_view(self.api, view_id) for view_id in dict.fromkeys(view_ids) if view_id not in self.views]
+        self.views.update((view.view_id, view) for view in fetched)
+        load.load_views(self.conn, fetched)
+        revealed = [
+            record
+            for record in fetch.linked_databases_from_views(fetched, self.databases)
+            if record.database_id not in self.linked
+        ]
+        self._record_linked(revealed)
+
+    def _record_linked(self, records: List[DatabaseRecord]) -> None:
+        self.linked.update((record.database_id, record) for record in records)
+        load.load_databases(self.conn, records)
+
+    def _resolve_container(self, block: BlockRecord) -> List[str]:
+        """Resolve a ``child_database`` block whose ID is not a known database.
+
+        :returns: Row IDs of data sources discovered through it.
+        """
+        # Search is not a reliable inventory and can miss data sources, so an unknown
+        # child_database may be an original database rather than a linked one: its
+        # views name its data sources. If they are all known, the block is linked.
+        with scope(phase="views", entity_type="database", entity_id=block.block_id):
+            listed = self.api.list_views(database_id=block.block_id)
+            self._load_views(listed)
+        unknown = [
+            view.data_source_id
+            for view_id in listed
+            if (view := self.views[view_id]).data_source_id is not None and view.data_source_id not in self.data_sources
+        ]
+        new_row_ids: List[str] = []
+        if unknown:
+            with scope(phase="discovery"):
+                sources, databases = self._add_data_sources(unknown)
+                check_workspace_names(self.data_sources.values())
+            with scope(phase="schema"):
+                self._load_schema(databases, sources)
+            with scope(phase="rows"):
+                for source in sources:
+                    self._load_rows(source)
+                    new_row_ids.extend(self.row_ids[source.data_source_id])
+            with scope(phase="views"):
+                self._load_views(
+                    fetch.list_view_ids(
+                        self.api,
+                        [source.data_source_id for source in sources],
+                        [database.database_id for database in databases],
+                    )
+                )
+        if block.block_id not in self.databases:
+            self._record_linked([fetch.linked_database_from_block(block)])
+        return new_row_ids
 
     def _load_bodies(self) -> None:
-        """Walk page bodies; child pages found on the way are added and walked too."""
+        """Walk page bodies; child pages and data sources found on the way are added too."""
         known = set(self.standalone_pages)
         queue: Deque[str] = deque(self.standalone_pages)
         if self.row_bodies:
             for ids in self.row_ids.values():
                 queue.extend(ids)
         known.update(row_id for ids in self.row_ids.values() for row_id in ids)
+        resolved: set = set()
         while queue:
             page_id = queue.popleft()
             with scope(entity_type="page", entity_id=page_id):
                 blocks = fetch.fetch_page_body(self.api, page_id)
                 load.load_page_body(self.conn, page_id, blocks)
-                linked = [
-                    fetch.linked_database_from_block(block)
-                    for block in blocks
-                    if block.type == "child_database" and block.block_id not in self.databases
-                ]
-                load.load_databases(self.conn, linked)
-                for block in blocks:
-                    if block.type == "child_page" and block.block_id not in known:
-                        known.add(block.block_id)
-                        with scope(entity_type="page", entity_id=block.block_id):
-                            child = fetch.fetch_child_page(self.api, block.block_id)
-                        if child is not None:
-                            load.load_pages(self.conn, [child])
-                            queue.append(child.page_id)
+            for block in blocks:
+                if block.type == "child_database" and block.block_id not in self.databases and block.block_id not in resolved:
+                    resolved.add(block.block_id)
+                    row_ids = self._resolve_container(block)
+                    known.update(row_ids)
+                    if self.row_bodies:
+                        queue.extend(row_ids)
+                elif block.type == "child_page" and block.block_id not in known:
+                    known.add(block.block_id)
+                    with scope(entity_type="page", entity_id=block.block_id):
+                        child = fetch.fetch_child_page(self.api, block.block_id)
+                    if child is not None:
+                        load.load_pages(self.conn, [child])
+                        queue.append(child.page_id)

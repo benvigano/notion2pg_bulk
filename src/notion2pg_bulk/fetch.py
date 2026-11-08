@@ -214,23 +214,31 @@ def query_rows(api: NotionAPI, data_source_id: str) -> Iterator[List[Mapping[str
 
 # ---------------------------------------------------------------- views
 
-def fetch_views(api: NotionAPI, data_source_ids: Iterable[str], database_ids: Iterable[str]) -> List[ViewRecord]:
-    """Retrieve every view once.
+def list_view_ids(api: NotionAPI, data_source_ids: Iterable[str], database_ids: Iterable[str]) -> List[str]:
+    """List view IDs, de-duplicated.
 
     Listing by data source includes linked views elsewhere in the workspace;
     listing by (original) database includes dashboards, which have no data source.
 
-    :param data_source_ids: All data sources.
-    :param database_ids: All original databases.
+    :param data_source_ids: Data sources to list views for.
+    :param database_ids: Original databases to list views for.
     """
     view_ids: Dict[str, None] = {}
     for data_source_id in data_source_ids:
-        for view_id in api.list_views(data_source_id=data_source_id):
-            view_ids.setdefault(view_id, None)
+        view_ids.update((view_id, None) for view_id in api.list_views(data_source_id=data_source_id))
     for database_id in database_ids:
-        for view_id in api.list_views(database_id=database_id):
-            view_ids.setdefault(view_id, None)
-    return [parse_view(api.retrieve_view(view_id)) for view_id in view_ids]
+        view_ids.update((view_id, None) for view_id in api.list_views(database_id=database_id))
+    return list(view_ids)
+
+
+def fetch_view(api: NotionAPI, view_id: str) -> ViewRecord:
+    """Retrieve one view."""
+    return parse_view(api.retrieve_view(view_id))
+
+
+def fetch_views(api: NotionAPI, data_source_ids: Iterable[str], database_ids: Iterable[str]) -> List[ViewRecord]:
+    """Retrieve every view listed for the given data sources and original databases, once each."""
+    return [fetch_view(api, view_id) for view_id in list_view_ids(api, data_source_ids, database_ids)]
 
 
 def linked_databases_from_views(views: Iterable[ViewRecord], original_ids: Iterable[str]) -> List[DatabaseRecord]:
