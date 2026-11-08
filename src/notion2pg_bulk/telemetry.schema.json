@@ -142,7 +142,7 @@
           "const": "throttle_wait"
         },
         "level": {
-          "const": "info"
+          "const": "debug"
         },
         "ts": {
           "type": "string",

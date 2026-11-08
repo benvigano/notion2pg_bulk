@@ -211,9 +211,9 @@ Any fault that is not retried, or that persists after its retries, raises an exc
 - Indicative duration on Free for a workspace of ~70 data sources and ~8,500 rows: about 5 min without row bodies, 50+ min with them.
 
 ## Telemetry
-One JSON event per limiter wait, retry transition or ended discovery path, on the `notion2pg_bulk` logger (the package only adds a `NullHandler`; the CLI writes to stderr).
+One JSON event per limiter wait, retry transition or ended discovery path, on the `notion2pg_bulk` logger (the package only adds a `NullHandler`; the CLI writes `info` and above to stderr).
 - **Events**
-  - `throttle_wait` (`info`): the limiter blocked a request.
+  - `throttle_wait` (`debug`): the limiter blocked a request.
   - `retry_scheduled` (`warning`): a retried fault, and the wait before the next attempt.
   - `retries_exhausted` (`error`): a retried fault that persisted.
   - `request_failed` (`error`): a fault that is not retried.

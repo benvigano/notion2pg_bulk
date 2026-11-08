@@ -46,6 +46,18 @@ def test_cli_leaves_no_handler_behind(monkeypatch):
     assert logging.getLogger("notion2pg_bulk").handlers == before
 
 
+def test_cli_output_leaves_out_debug_events(monkeypatch):
+    seen = {}
+
+    def fake_snapshot(*args, **kwargs):
+        logger = logging.getLogger("notion2pg_bulk")
+        seen["debug"], seen["info"] = logger.isEnabledFor(logging.DEBUG), logger.isEnabledFor(logging.INFO)
+
+    monkeypatch.setattr(cli, "snapshot", fake_snapshot)
+    cli.main(["--notion-token", "t", "--database-url", "postgresql://x/y"])
+    assert seen == {"debug": False, "info": True}
+
+
 def test_json_formatter_outputs_one_object_per_record():
     record = logging.LogRecord("notion2pg_bulk", logging.WARNING, __file__, 1, "{}", None, None)
     record.telemetry = {"event": "throttle_wait", "wait_s": 1.0}
