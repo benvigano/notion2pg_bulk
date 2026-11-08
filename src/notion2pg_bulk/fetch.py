@@ -381,12 +381,17 @@ def mention_references(value: Any) -> Iterator[Ref]:
 
 
 def block_references(block: BlockRecord) -> Iterator[Ref]:
-    """Yield what a block leads to: child pages, ``link_to_page`` targets, mentions.
+    """Yield what a block leads to: child pages, ``link_to_page`` targets, the
+    original of a synced-block copy (followed up to its page), mentions.
 
     ``child_database`` blocks are resolved separately (they carry a location).
     """
     if block.type == "child_page":
         yield "page", block.block_id
+    if block.type == "synced_block":
+        synced_from = block.content.get("synced_from") or {}
+        if synced_from.get("block_id"):
+            yield "block", synced_from["block_id"]
     if block.type == "link_to_page":
         target_type = block.content.get("type")
         if target_type in _PARENT_KINDS and block.content.get(target_type):

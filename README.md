@@ -50,13 +50,13 @@ _Python package to snapshot a Notion workspace to a PostgreSQL database, within 
 Search is only the starting point. From there, discovery follows documented paths, and repeats until nothing new is found:
 - **up**: the parent of every captured page, block, database and data source, up to the workspace;
 - **down**: page bodies, `child_page` blocks, and the views of `child_database` blocks (listed by `database_id`);
-- **sideways**: data sources named by relation settings, views and dashboard widgets; pages and databases named by `link_to_page` blocks and mentions; child data sources (wikis) returned by data source queries.
+- **sideways**: data sources named by relation settings, views and dashboard widgets; pages and databases named by `link_to_page` blocks and mentions; the original block of each synced-block copy (`synced_from.block_id`), followed up to its page; child data sources (wikis) returned by data source queries.
 
 Every page found gets its body walked; every data source found gets its table, rows and views. A database reached by ID is original only if it contains a discovered data source; otherwise it is recorded as linked.
 
 ## Coverage limits
 Even with full workspace access and every requirement below met, a snapshot may miss:
-- **Content that no documented path connects to captured content**: search can miss items, and nothing else leads to them. Keeping all content under a single top-level page makes the workspace one connected tree.
+- **Content that no documented path connects to captured content**: search can miss items, and nothing else leads to them (this includes an original database with no views reached only by ID, e.g. through a mention: `GET /databases/{id}` isn't used on databases reached by ID, so it is recorded as linked). Keeping all content under a single top-level page makes the workspace one connected tree.
 - **Pages whose parent is `database_id`**: search is their only path.
 - **Items reachable only through row bodies**, when row bodies are skipped.
 - **A dashboard without widgets, inside a linked database the walk never reaches.**

@@ -190,3 +190,35 @@ def test_404_outside_discovery_still_raises(database_url, clock):
                           if r.url.path == f"/v1/blocks/{ws.standalone_page}/children" else None)
     with pytest.raises(NotionAPIError):
         run_snapshot(ws.fake, database_url, clock)
+
+
+def test_synced_copy_leads_to_the_page_of_its_original(database_url, clock):
+    ws = build_workspace()
+    holder = hidden_page(ws, WORKSPACE, "Holder")
+    column_list = block("column_list", {}, has_children=True, parent={"type": "page_id", "page_id": holder})
+    original = block("synced_block", {"synced_from": None}, has_children=True,
+                     parent={"type": "block_id", "block_id": column_list["id"]})
+    ws.fake.set_children(holder, [column_list])
+    ws.fake.set_children(column_list["id"], [original])
+    ws.fake.set_children(original["id"], [paragraph("synced content")])
+    copy = block("synced_block", {"synced_from": {"type": "block_id", "block_id": original["id"]}}, has_children=True)
+    ws.fake.children[ws.standalone_page].append(copy)
+    run_snapshot(ws.fake, database_url, clock)
+    assert holder in captured_pages(database_url)
+    assert body_count(database_url, holder) == 3
+    assert ws.fake.count("GET", f"blocks/{original['id']}") >= 1 and ws.fake.count("GET", f"blocks/{column_list['id']}") >= 1
+    [stored] = query(database_url, "SELECT content FROM notion.blocks WHERE block_id = :b", b=copy["id"])
+    assert stored[0] == {"synced_from": {"type": "block_id", "block_id": original["id"]}}
+
+
+def test_synced_copy_of_a_known_page_costs_no_new_page(database_url, clock):
+    ws = build_workspace()
+    original = block("synced_block", {"synced_from": None}, has_children=True,
+                     parent={"type": "page_id", "page_id": ws.standalone_page})
+    ws.fake.children[ws.standalone_page].append(original)
+    ws.fake.set_children(original["id"], [paragraph("synced content")])
+    ws.fake.set_children(ws.project_row, [block("synced_block", {"synced_from": {"type": "block_id",
+                                                                                 "block_id": original["id"]}})])
+    run_snapshot(ws.fake, database_url, clock)
+    assert ws.fake.count("GET", f"pages/{ws.standalone_page}") == 0
+    assert body_count(database_url, ws.standalone_page) == 5
