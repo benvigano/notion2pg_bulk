@@ -28,7 +28,7 @@ CREATED_TIME_ASCENDING = [{"timestamp": "created_time", "direction": "ascending"
 RESULT_LIMIT_REASON = "query_result_limit_reached"
 MEDIA_BLOCK_TYPES = frozenset({"image", "video", "audio", "file", "pdf"})
 HOSTED_EMBED_MARKERS = frozenset({"file", "file_upload"})
-UNWALKED_BLOCK_TYPES = frozenset({"child_page", "child_database"})
+UNWALKED_BLOCK_TYPES = frozenset({"child_page", "child_database", "unsupported"})
 SELECT_TYPES = frozenset({"select", "status"})
 
 
@@ -304,8 +304,9 @@ def _block_content(block: Mapping[str, Any]) -> Dict[str, Any]:
 def walks_into(block: Mapping[str, Any]) -> bool:
     """Whether a block's children belong to this body.
 
-    Child pages and child databases have bodies of their own, and synced-block
-    copies only point at their original.
+    Child pages and child databases have bodies of their own, synced-block
+    copies only point at their original, and the content of unsupported
+    blocks is not exposed.
     """
     if not block.get("has_children") or block["type"] in UNWALKED_BLOCK_TYPES:
         return False

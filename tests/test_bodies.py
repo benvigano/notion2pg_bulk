@@ -98,3 +98,14 @@ def test_depth_within_limit_is_walked(clock):
         fake.set_children(parent, [child])
         parent = child["id"]
     assert len(walk(fake, clock, page_id)) == 100
+
+
+def test_unsupported_blocks_are_stored_but_not_walked(clock):
+    fake = FakeNotion()
+    page_id = new_id()
+    form = block("unsupported", {"block_type": "form"}, has_children=True)
+    fake.set_children(page_id, [form])
+    fake.set_children(form["id"], [paragraph("must not be read")])
+    blocks = walk(fake, clock, page_id)
+    assert [(b.type, b.content) for b in blocks] == [("unsupported", {"block_type": "form"})]
+    assert f"/v1/blocks/{form['id']}/children" not in {r.url.path for r in fake.requests}
