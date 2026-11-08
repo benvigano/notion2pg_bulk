@@ -1,6 +1,6 @@
 # notion2pg_bulk
 
-_Python package to snapshot an entire Notion workspace to a PostgreSQL database._
+_Python package to snapshot a Notion workspace to a PostgreSQL database, within its [coverage limits](#coverage-limits)._
 
 ## Snapshot scope
 
@@ -36,7 +36,7 @@ _Python package to snapshot an entire Notion workspace to a PostgreSQL database.
     - descriptions; select/multi-select/status options (colors, descriptions); number formats; unique-ID prefixes
     - relations as configured (target, `limit`, one-/two-way), including targets the integration cannot access
     - formula and rollup definitions; expressions stored as returned, including internal `{{notion:…}}` references
-  - **Rows** (pages): all of them, including data sources over 10k rows
+  - **Rows** (pages): every row the data source queries return, including data sources over 10k rows
     - fields: icon, `is_locked`, `public_url`
     - property values: every type not listed in the "Not captured" section, each losslessly in its own column, including status, unique ID, place, wiki verification, date ranges and time zones, and relations with more than 25 links
     - body: blocks (optional, on by default)
@@ -45,6 +45,22 @@ _Python package to snapshot an entire Notion workspace to a PostgreSQL database.
   - block colors
   - synced blocks: the original is stored as a normal block with its children; copies are stored as a pointer (`synced_from.block_id`), with no duplicated content
 - **Rich text** (titles, text properties, blocks): formatting, colors, links, mentions (including link mentions), inline equations
+
+## Discovery
+Search is only the starting point. From there, discovery follows documented paths, and repeats until nothing new is found:
+- **up**: the parent of every captured page, block, database and data source, up to the workspace;
+- **down**: page bodies, `child_page` blocks, and the views of `child_database` blocks (listed by `database_id`);
+- **sideways**: data sources named by relation settings, views and dashboard widgets; pages and databases named by `link_to_page` blocks and mentions; child data sources (wikis) returned by data source queries.
+
+Every page found gets its body walked; every data source found gets its table, rows and views. A database reached by ID is original only if it contains a discovered data source; otherwise it is recorded as linked.
+
+## Coverage limits
+Even with full workspace access and every requirement below met, a snapshot may miss:
+- **Content that no documented path connects to captured content**: search can miss items, and nothing else leads to them. Keeping all content under a single top-level page makes the workspace one connected tree.
+- **Pages whose parent is `database_id`**: search is their only path.
+- **Items reachable only through row bodies**, when row bodies are skipped.
+- **A dashboard without widgets, inside a linked database the walk never reaches.**
+- **Edits made while the snapshot runs.** Search also lags behind recent changes.
 
 ## Installation
 ### Pip
@@ -123,8 +139,8 @@ A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, w
 - **Shared tables, keyed by Notion IDs**:
   - catalog: data source → table name, property → column name. Names are verbatim: the table is named exactly after the data source title and each column exactly after its property name, as quoted identifiers (no sanitizing, lowercasing or truncating). The row ID column is `_page_id`.
   - databases (original and linked), data sources, properties (full configuration, including formula and rollup definitions), select/multi-select/status options, views
-  - pages: every page, rows included (parent, title for standalone pages, icon, `is_locked`, `public_url`)
-  - blocks: every block of every page body (`page_id`, parent block, position, type, content)
+  - pages: every captured page, rows included (parent, title for standalone pages, icon, `is_locked`, `public_url`)
+  - blocks: every block of every captured page body (`page_id`, parent block, position, type, content)
 - References between entities (relations, parents, options, views → data sources) are stored as Notion IDs.
 - **Two schemas**: `notion` holds the shared tables, `rows` holds the row tables, so row-table names never collide with them.
 - **What Notion guarantees**: property names are unique within a data source (they are the keys of the API's `properties` object); IDs are unique and stable. Titles of data sources and databases are not guaranteed unique and can be empty (see [Workspace requirements](#workspace-requirements)).
@@ -183,7 +199,7 @@ Notion has no snapshot API, so **a snapshot is not point-in-time consistent**: e
 The snapshot itself is atomic: DDL and data are written in one PostgreSQL transaction, so a failed run leaves the target empty.
 
 ## Failures
-Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target empty. Nothing is skipped and continued.
+Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target empty. Nothing is skipped and continued, with one exception: a lookup made only to extend [discovery](#discovery) that returns 404 simply ends that path.
 
 | Exception | Raised when |
 |---|---|
