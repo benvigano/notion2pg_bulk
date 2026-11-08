@@ -138,6 +138,9 @@
         "event": {
           "const": "throttle_wait"
         },
+        "level": {
+          "const": "info"
+        },
         "ts": {
           "type": "string",
           "maxLength": 512
@@ -162,6 +165,7 @@
       },
       "required": [
         "event",
+        "level",
         "ts",
         "propagation_id",
         "locus",
@@ -175,6 +179,9 @@
       "properties": {
         "event": {
           "const": "retry_scheduled"
+        },
+        "level": {
+          "const": "warning"
         },
         "ts": {
           "type": "string",
@@ -222,6 +229,7 @@
       },
       "required": [
         "event",
+        "level",
         "ts",
         "propagation_id",
         "locus",
@@ -240,6 +248,9 @@
       "properties": {
         "event": {
           "const": "retries_exhausted"
+        },
+        "level": {
+          "const": "error"
         },
         "ts": {
           "type": "string",
@@ -283,6 +294,7 @@
       },
       "required": [
         "event",
+        "level",
         "ts",
         "propagation_id",
         "locus",
@@ -300,6 +312,9 @@
       "properties": {
         "event": {
           "const": "request_failed"
+        },
+        "level": {
+          "const": "error"
         },
         "ts": {
           "type": "string",
@@ -325,6 +340,7 @@
       },
       "required": [
         "event",
+        "level",
         "ts",
         "propagation_id",
         "locus",

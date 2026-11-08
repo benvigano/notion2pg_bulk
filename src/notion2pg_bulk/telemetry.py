@@ -137,6 +137,7 @@ class ThrottleWait(_Event):
     limiter: Literal["connection", "data_source_query"]
     wait_s: float
     event: Literal["throttle_wait"] = field(default="throttle_wait")
+    level: Literal["info"] = field(default="info")
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,7 @@ class RetryScheduled(_Event):
     anomaly: Anomaly
     context: Context
     event: Literal["retry_scheduled"] = field(default="retry_scheduled")
+    level: Literal["warning"] = field(default="warning")
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,7 @@ class RetriesExhausted(_Event):
     anomaly: Anomaly
     context: Context
     event: Literal["retries_exhausted"] = field(default="retries_exhausted")
+    level: Literal["error"] = field(default="error")
 
 
 @dataclass(frozen=True)
@@ -174,16 +177,12 @@ class RequestFailed(_Event):
     anomaly: Anomaly
     context: Context
     event: Literal["request_failed"] = field(default="request_failed")
+    level: Literal["error"] = field(default="error")
 
 
 TelemetryEvent = Union[ThrottleWait, RetryScheduled, RetriesExhausted, RequestFailed]
 
-_LEVELS = {
-    "throttle_wait": logging.INFO,
-    "retry_scheduled": logging.WARNING,
-    "retries_exhausted": logging.ERROR,
-    "request_failed": logging.ERROR,
-}
+_LOGGING_LEVELS = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
 
 
 def _bounded(value: Any) -> Any:
@@ -225,7 +224,7 @@ class Telemetry:
         :param event: Event to emit.
         """
         payload = event.to_dict()
-        logger.log(_LEVELS[payload["event"]], json.dumps(payload), extra={"telemetry": payload})
+        logger.log(_LOGGING_LEVELS[payload["level"]], json.dumps(payload), extra={"telemetry": payload})
 
 
 def load_schema() -> Dict[str, Any]:

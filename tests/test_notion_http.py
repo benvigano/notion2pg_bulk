@@ -277,3 +277,44 @@ def test_pagination_rejects_missing_cursor():
 def test_pagination_rejects_repeated_cursor():
     with pytest.raises(SnapshotIntegrityError):
         list(paginate(lambda cursor: {"results": [], "has_more": True, "next_cursor": "same"}))
+
+
+def test_every_event_carries_its_level(clock, telemetry_events):
+    import logging
+
+    records = []
+
+    class Spy(logging.Handler):
+        def emit(self, record):
+            records.append((record.levelno, record.telemetry["level"], record.telemetry["event"]))
+
+    spy = Spy()
+    logging.getLogger("notion2pg_bulk").addHandler(spy)
+    try:
+        handler, _ = scripted([respond(error_response(500, "internal_server_error"))] * 6
+                              + [respond(error_response(400, "validation_error"))])
+        http = make_http(handler, clock)
+        with pytest.raises(RetriesExhaustedError):
+            http.request("POST", "data_sources/d/query", "/v1/data_sources/{data_source_id}/query", body={},
+                         is_data_source_query=True)
+        with pytest.raises(NotionAPIError):
+            http.request("POST", "data_sources/d/query", "/v1/data_sources/{data_source_id}/query", body={},
+                         is_data_source_query=True)
+    finally:
+        logging.getLogger("notion2pg_bulk").removeHandler(spy)
+    expected = {"throttle_wait": (logging.INFO, "info"), "retry_scheduled": (logging.WARNING, "warning"),
+                "retries_exhausted": (logging.ERROR, "error"), "request_failed": (logging.ERROR, "error")}
+    assert {event for _, _, event in records} == set(expected)
+    assert all((levelno, level) == expected[event] for levelno, level, event in records)
+
+
+def test_schema_rejects_a_wrong_level():
+    import jsonschema
+    from notion2pg_bulk.telemetry import load_schema
+
+    event = {"event": "throttle_wait", "level": "error", "ts": "t", "propagation_id": "p",
+             "locus": {"phase": None, "entity_type": None, "entity_id": None, "method": "GET", "endpoint": "/v1/x"},
+             "limiter": "connection", "wait_s": 1.0}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(event, load_schema())
+    jsonschema.validate({**event, "level": "info"}, load_schema())
