@@ -6,7 +6,7 @@ them to PostgreSQL.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .errors import SnapshotIntegrityError
@@ -53,7 +53,11 @@ class OptionRecord:
 
 @dataclass(frozen=True)
 class PropertyRecord:
-    """A data source property (schema entry) with its full configuration."""
+    """A data source property (schema entry) with its full configuration.
+
+    ``column_name`` is the property name when the snapshot first saw it; it
+    stays fixed if the property is renamed while the snapshot runs.
+    """
 
     property_id: str
     name: str
@@ -61,6 +65,7 @@ class PropertyRecord:
     description: Optional[str]
     config: Mapping[str, JSON]
     options: Tuple[OptionRecord, ...]
+    column_name: str
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,18 @@ class DataSourceRecord:
             if prop.property_id == property_id:
                 return prop
         return None
+
+    def refreshed(self, fresh: "DataSourceRecord") -> "DataSourceRecord":
+        """Adopt the schema of ``fresh`` while keeping the table and column names
+        already assigned (Notion renames during a run do not move data) and the
+        properties deleted meanwhile (earlier rows hold values for them).
+        """
+        fresh_ids = {prop.property_id for prop in fresh.properties}
+        properties = tuple(
+            replace(prop, column_name=known.column_name) if (known := self.property(prop.property_id)) else prop
+            for prop in fresh.properties
+        ) + tuple(prop for prop in self.properties if prop.property_id not in fresh_ids)
+        return replace(fresh, table_name=self.table_name, properties=properties)
 
 
 @dataclass(frozen=True)
@@ -201,6 +218,7 @@ def parse_data_source(obj: Mapping[str, Any]) -> DataSourceRecord:
             description=prop.get("description"),
             config=dict(prop),
             options=parse_options(prop),
+            column_name=name,
         )
         for name, prop in obj["properties"].items()
     )

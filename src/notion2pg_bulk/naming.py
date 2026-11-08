@@ -27,16 +27,28 @@ def _identifier_problem(name: str) -> str | None:
 def column_problems(data_source: DataSourceRecord) -> List[str]:
     """:returns: Violations of the column naming rules in one data source."""
     problems = []
-    for prop, _ in property_columns(data_source):
-        issue = _identifier_problem(prop.name)
+    for prop, column in property_columns(data_source):
+        label = f"property {column.name!r} ({prop.property_id}) of data source {data_source.data_source_id}"
+        issue = _identifier_problem(column.name)
         if issue is not None:
-            problems.append(f"property {prop.name!r} ({prop.property_id}) of data source {data_source.data_source_id} {issue}")
-        if prop.name in RESERVED_COLUMN_NAMES:
-            problems.append(
-                f"property {prop.name!r} ({prop.property_id}) of data source {data_source.data_source_id} "
-                "uses a reserved column name"
-            )
+            problems.append(f"{label} {issue}")
+        if column.name in RESERVED_COLUMN_NAMES:
+            problems.append(f"{label} uses a reserved column name")
+    counts = Counter(column.name for _, column in property_columns(data_source))
+    for name, count in sorted(counts.items()):
+        if count > 1:
+            problems.append(f"column {name!r} of data source {data_source.data_source_id} is claimed by {count} properties")
     return problems
+
+
+def check_column_names(data_source: DataSourceRecord) -> None:
+    """Check the column names of one data source (e.g. after a schema refresh).
+
+    :raises SnapshotIntegrityError: A column-bearing property name is too long or reserved.
+    """
+    problems = column_problems(data_source)
+    if problems:
+        raise SnapshotIntegrityError("Workspace naming requirements not met: " + "; ".join(problems))
 
 
 def check_workspace_names(data_sources: Iterable[DataSourceRecord]) -> None:

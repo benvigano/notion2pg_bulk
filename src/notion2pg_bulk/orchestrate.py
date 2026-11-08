@@ -10,7 +10,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 from . import fetch, load
-from .naming import check_workspace_names
+from .errors import SnapshotIntegrityError
+from .naming import check_column_names, check_workspace_names
 from .notion_api import NotionAPI
 from .notion_http import NotionHTTP, Plan
 from .records import DataSourceRecord, PageRecord
@@ -124,11 +125,36 @@ class _Snapshot:
         load.load_pages(self.conn, self.standalone_pages.values())
 
     def _load_rows(self, data_source: DataSourceRecord) -> None:
-        ids = self.row_ids.setdefault(data_source.data_source_id, [])
-        table = self.row_tables[data_source.data_source_id]
-        for rows in fetch.fetch_rows(self.api, data_source):
-            load.load_rows(self.conn, data_source, table, rows)
+        ds_id = data_source.data_source_id
+        ids = self.row_ids.setdefault(ds_id, [])
+        for objects in fetch.query_rows(self.api, ds_id):
+            if any(fetch.schema_mismatches(obj, data_source) for obj in objects):
+                data_source = self._refresh_schema(data_source)
+            rows = [fetch.parse_row(self.api, obj, data_source) for obj in objects]
+            load.load_rows(self.conn, data_source, self.row_tables[ds_id], rows)
             ids.extend(row.page.page_id for row in rows)
+
+    def _refresh_schema(self, data_source: DataSourceRecord) -> DataSourceRecord:
+        """Re-read a data source whose rows disagree with its schema, and extend its tables.
+
+        :raises SnapshotIntegrityError: A property changed type, or a new
+            property cannot be named.
+        """
+        merged = data_source.refreshed(fetch.fetch_data_source(self.api, data_source.data_source_id))
+        changed = [
+            prop.property_id
+            for prop in merged.properties
+            if (known := data_source.property(prop.property_id)) is not None and known.type != prop.type
+        ]
+        if changed:
+            raise SnapshotIntegrityError(
+                f"Data source {data_source.data_source_id}: properties changed type during the snapshot: "
+                + ", ".join(changed)
+            )
+        check_column_names(merged)
+        self.data_sources[merged.data_source_id] = merged
+        self.row_tables[merged.data_source_id] = load.load_data_source(self.conn, merged)
+        return merged
 
     def _load_bodies(self) -> None:
         page_ids = list(self.standalone_pages)

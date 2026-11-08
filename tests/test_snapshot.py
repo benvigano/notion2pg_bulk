@@ -197,11 +197,28 @@ def test_loading_same_records_twice_is_idempotent(database_url, clock):
             load.load_databases(conn, [fetch.fetch_database(api, db) for db in (ws.projects_db, ws.tasks_db)])
             for source in sources:
                 table = load.load_data_source(conn, source)
-                for rows in fetch.fetch_rows(api, source):
-                    load.load_rows(conn, source, table, rows)
+                for objects in fetch.query_rows(api, source.data_source_id):
+                    load.load_rows(conn, source, table, [fetch.parse_row(api, o, source) for o in objects])
             load.load_pages(conn, fetch.discover_standalone_pages(api))
             for page_id in (ws.standalone_page, ws.project_row):
                 load.load_page_body(conn, page_id, fetch.fetch_page_body(api, page_id))
             load.load_views(conn, fetch.fetch_views(api, sources))
     engine.dispose()
     assert dump_database(database_url) == before
+
+
+def test_pages_parented_by_database_id_are_kept(database_url, clock):
+    from fake_notion import new_id, page, paragraph, title_value
+
+    ws = build_workspace()
+    legacy = new_id()
+    ws.fake.add_page(page(legacy, {"type": "database_id", "database_id": ws.projects_db}, {"Name": title_value("Legacy")}))
+    ws.fake.set_children(legacy, [paragraph("legacy body")])
+    template = new_id()
+    ws.fake.add_page(page(template, {"type": "data_source_id", "data_source_id": ws.projects_ds,
+                                     "database_id": ws.projects_db}, {"Name": title_value("Template")}))
+    run_snapshot(ws.fake, database_url, clock)
+    [found] = query(database_url, "SELECT parent_type, parent_id::text, title FROM notion.pages WHERE page_id = :p", p=legacy)
+    assert (found[0], found[1], found[2][0]["plain_text"]) == ("database_id", ws.projects_db, "Legacy")
+    assert query(database_url, "SELECT count(*) FROM notion.blocks WHERE page_id = :p", p=legacy)[0][0] == 1
+    assert query(database_url, "SELECT count(*) FROM notion.pages WHERE page_id = :p", p=template)[0][0] == 0

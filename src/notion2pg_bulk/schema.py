@@ -136,7 +136,7 @@ def property_columns(data_source: DataSourceRecord) -> Iterable[Tuple[PropertyRe
     for prop in data_source.properties:
         sql_type = column_type(prop.type)
         if sql_type is not None:
-            yield prop, Column(prop.name, sql_type)
+            yield prop, Column(prop.column_name, sql_type)
 
 
 def row_table(data_source: DataSourceRecord) -> Table:
