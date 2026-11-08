@@ -250,17 +250,19 @@ class _Snapshot:
 
         Its data sources come from its views; it is an original database only if
         it turns out to contain one of them, otherwise it is recorded as linked.
+        A database whose views can't be listed (not found) is not recorded.
         """
-        self.containers.setdefault(database_id, block)
         with scope(phase="views", entity_type="database", entity_id=database_id):
             listed = self.api.list_views(database_id=database_id, missing_ok=True)
-        if listed is not None:
-            self._accept_listed_views(listed)
+        if listed is None:
+            return
+        self.containers.setdefault(database_id, block)
+        self._accept_listed_views(listed)
 
     # ------------------------------------------------------------ accepting records
 
-    def _accept_data_source(self, data_source: DataSourceRecord) -> None:
-        if data_source.data_source_id in self.data_sources:
+    def _accept_data_source(self, data_source: Optional[DataSourceRecord]) -> None:
+        if data_source is None or data_source.data_source_id in self.data_sources:
             return
         self.data_sources[data_source.data_source_id] = data_source
         self.unloaded_sources.append(data_source)
@@ -343,10 +345,13 @@ class _Snapshot:
     def _refresh_schema(self, data_source: DataSourceRecord) -> DataSourceRecord:
         """Re-read a data source whose rows disagree with its schema, and extend its tables.
 
-        :raises SnapshotIntegrityError: A property changed type, or a new
-            property cannot be named.
+        :raises SnapshotIntegrityError: The data source was trashed meanwhile, a
+            property changed type, or a new property cannot be named.
         """
-        merged = data_source.refreshed(fetch.fetch_data_source(self.api, data_source.data_source_id))
+        fresh = fetch.fetch_data_source(self.api, data_source.data_source_id)
+        if fresh is None:
+            raise SnapshotIntegrityError(f"Data source {data_source.data_source_id} was trashed during the snapshot")
+        merged = data_source.refreshed(fresh)
         changed = [
             prop.property_id
             for prop in merged.properties

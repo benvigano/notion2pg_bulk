@@ -325,5 +325,7 @@ class FakeNotion:
         else:
             db_id = params["database_id"]
             refs = [v for v in self.views.values() if v["parent"]["database_id"] == db_id]
+            if not refs and db_id not in self.databases:
+                return error_body(404, "object_not_found", f"Could not find database with ID: {db_id}")
         refs = [{"object": "view", "id": v["id"]} for v in refs]
         return self._list(refs, params, extra={"type": "view", "view": {}})

@@ -252,16 +252,7 @@ class NotionHTTP:
                 outcome = self._attempt(method, path, query, body)
             except NotionAPIError as exc:
                 if missing_ok and exc.status == NOT_FOUND:
-                    self._telemetry.emit(
-                        DiscoveryStopped(
-                            ts=utc_now(),
-                            propagation_id=self._telemetry.propagation_id,
-                            locus=locus,
-                            attempt=attempt,
-                            anomaly=_anomaly(exc),
-                            context=_context(exc),
-                        )
-                    )
+                    self._emit_stopped(locus, "not_found", attempt, _anomaly(exc), _context(exc))
                     return None
                 self._emit_failed(exc, attempt, locus)
                 raise
@@ -340,6 +331,30 @@ class NotionHTTP:
             return float(error.retry_after), "retry_after"
         jitter = 1.0 + self._rng.uniform(0.0, MAX_JITTER)
         return BACKOFF_BASE_S * (2 ** (attempt - 1)) * jitter, "backoff"
+
+    def report_out_of_scope(self, method: str, endpoint: str, reason: Literal["in_trash", "archived"]) -> None:
+        """Emit ``discovery_stopped`` for an object that was returned but is out of scope.
+
+        :param method: HTTP method of the request that returned it.
+        :param endpoint: Path template of that request.
+        :param reason: Why the object is out of scope.
+        """
+        self._emit_stopped(self._telemetry.locus(method, endpoint), reason, 1, Anomaly(http_status=200), Context())
+
+    def _emit_stopped(
+        self, locus: Locus, reason: Literal["not_found", "in_trash", "archived"], attempt: int, anomaly: Anomaly, context: Context
+    ) -> None:
+        self._telemetry.emit(
+            DiscoveryStopped(
+                ts=utc_now(),
+                propagation_id=self._telemetry.propagation_id,
+                locus=locus,
+                reason=reason,
+                attempt=attempt,
+                anomaly=anomaly,
+                context=context,
+            )
+        )
 
     def _emit_failed(self, exc: BaseException, attempt: int, locus: Locus) -> None:
         self._telemetry.emit(

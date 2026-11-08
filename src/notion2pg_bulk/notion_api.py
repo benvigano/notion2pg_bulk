@@ -58,23 +58,39 @@ class NotionAPI:
         for response in paginate(fetch):
             yield from response.get("results", [])
 
+    def _retrieve(self, path: str, endpoint: str, missing_ok: bool) -> Optional[Response]:
+        """Retrieve one object; a trashed (or archived) object counts as absent.
+
+        :returns: The object, or ``None`` when it is trashed or archived (out of the
+            snapshot's scope; reported as ``discovery_stopped``) or, with
+            ``missing_ok``, not found.
+        """
+        obj = self._http.request("GET", path, endpoint, missing_ok=missing_ok)
+        if obj is None:
+            return None
+        if obj.get("in_trash"):
+            self._http.report_out_of_scope("GET", endpoint, "in_trash")
+            return None
+        if obj.get("is_archived"):
+            self._http.report_out_of_scope("GET", endpoint, "archived")
+            return None
+        return obj
+
     def retrieve_data_source(self, data_source_id: str, missing_ok: bool = False) -> Optional[Response]:
-        """:returns: The data source object (``None`` on an ignored 404, see ``missing_ok``)."""
-        return self._http.request(
-            "GET", f"data_sources/{data_source_id}", "/v1/data_sources/{data_source_id}", missing_ok=missing_ok
-        )
+        """:returns: The data source object, or ``None`` (see :meth:`_retrieve`)."""
+        return self._retrieve(f"data_sources/{data_source_id}", "/v1/data_sources/{data_source_id}", missing_ok)
 
     def retrieve_database(self, database_id: str, missing_ok: bool = False) -> Optional[Response]:
-        """:returns: The database object (``None`` on an ignored 404)."""
-        return self._http.request("GET", f"databases/{database_id}", "/v1/databases/{database_id}", missing_ok=missing_ok)
+        """:returns: The database object, or ``None`` (see :meth:`_retrieve`)."""
+        return self._retrieve(f"databases/{database_id}", "/v1/databases/{database_id}", missing_ok)
 
     def retrieve_page(self, page_id: str, missing_ok: bool = False) -> Optional[Response]:
-        """:returns: The page object (``None`` on an ignored 404)."""
-        return self._http.request("GET", f"pages/{page_id}", "/v1/pages/{page_id}", missing_ok=missing_ok)
+        """:returns: The page object, or ``None`` (see :meth:`_retrieve`)."""
+        return self._retrieve(f"pages/{page_id}", "/v1/pages/{page_id}", missing_ok)
 
     def retrieve_block(self, block_id: str, missing_ok: bool = False) -> Optional[Response]:
-        """:returns: The block object (``None`` on an ignored 404)."""
-        return self._http.request("GET", f"blocks/{block_id}", "/v1/blocks/{block_id}", missing_ok=missing_ok)
+        """:returns: The block object, or ``None`` (see :meth:`_retrieve`)."""
+        return self._retrieve(f"blocks/{block_id}", "/v1/blocks/{block_id}", missing_ok)
 
     def retrieve_view(self, view_id: str, missing_ok: bool = False) -> Optional[Response]:
         """:returns: The view object (``None`` on an ignored 404)."""

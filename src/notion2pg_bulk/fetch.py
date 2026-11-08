@@ -42,17 +42,21 @@ def discover_data_source_ids(api: NotionAPI) -> List[str]:
     return list(ids)
 
 
-def fetch_data_source(api: NotionAPI, data_source_id: str) -> DataSourceRecord:
-    """Retrieve one data source with its full schema."""
-    return parse_data_source(api.retrieve_data_source(data_source_id))
+def fetch_data_source(api: NotionAPI, data_source_id: str) -> Optional[DataSourceRecord]:
+    """Retrieve one data source with its full schema; ``None`` if it is trashed."""
+    obj = api.retrieve_data_source(data_source_id)
+    return parse_data_source(obj) if obj is not None else None
 
 
-def fetch_database(api: NotionAPI, database_id: str) -> Tuple[DatabaseRecord, List[str]]:
+def fetch_database(api: NotionAPI, database_id: str) -> Optional[Tuple[DatabaseRecord, List[str]]]:
     """Retrieve one original database.
 
-    :returns: The database and the IDs of the data sources it holds.
+    :returns: The database and the IDs of the data sources it holds, or ``None``
+        if it is trashed.
     """
     obj = api.retrieve_database(database_id)
+    if obj is None:
+        return None
     return parse_database(obj), [entry["id"] for entry in obj.get("data_sources") or []]
 
 
@@ -451,5 +455,4 @@ def fetch_referenced_page(api: NotionAPI, page_id: str) -> Optional[Mapping[str,
 
     :returns: The page object, or ``None`` if it is not found, trashed or archived.
     """
-    obj = api.retrieve_page(page_id, missing_ok=True)
-    return obj if obj is not None and is_live(obj) else None
+    return api.retrieve_page(page_id, missing_ok=True)

@@ -71,6 +71,16 @@ def admin_url() -> Iterator[str]:
 @pytest.fixture
 def database_url(admin_url: str) -> Iterator[str]:
     """URL of a freshly created, empty database, dropped after the test."""
+    yield from _fresh_database(admin_url)
+
+
+@pytest.fixture
+def second_database_url(admin_url: str) -> Iterator[str]:
+    """URL of another freshly created, empty database, dropped after the test."""
+    yield from _fresh_database(admin_url)
+
+
+def _fresh_database(admin_url: str) -> Iterator[str]:
     name = f"n2pg_test_{uuid.uuid4().hex[:12]}"
     admin = create_engine(make_url(admin_url).set(drivername="postgresql+psycopg"), isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:

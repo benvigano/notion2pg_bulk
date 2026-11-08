@@ -52,7 +52,7 @@ Search is only the starting point. From there, discovery follows documented path
 - **down**: page bodies, `child_page` blocks, and the views of `child_database` blocks (listed by `database_id`);
 - **sideways**: data sources named by relation settings, views and dashboard widgets; pages and databases named by `link_to_page` blocks and mentions; the original block of each synced-block copy (`synced_from.block_id`), followed up to its page; child data sources (wikis) returned by data source queries.
 
-Every page found gets its body walked; every data source found gets its table, rows and views. A database reached by ID is original only if it contains a discovered data source; otherwise it is recorded as linked.
+Every page found gets its body walked; every data source found gets its table, rows and views. A path ends at an object that is not found (404 on a lookup made only to extend discovery) or that is returned trashed or archived. A database reached by ID is original only if it contains a discovered data source; otherwise it is recorded as linked.
 
 ## Coverage limits
 Even with full workspace access and every requirement below met, a snapshot may miss:
@@ -199,7 +199,7 @@ Notion has no snapshot API, so **a snapshot is not point-in-time consistent**: e
 The snapshot itself is atomic: DDL and data are written in one PostgreSQL transaction, so a failed run leaves the target empty.
 
 ## Failures
-Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target empty. Nothing is skipped and continued, with one exception: a lookup made only to extend [discovery](#discovery) that returns 404 simply ends that path.
+Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target empty. Nothing is skipped and continued, with two exceptions: a lookup made only to extend [discovery](#discovery) that returns 404 simply ends that path, and an object returned with `in_trash` (or `is_archived`) is out of scope and ends its path too.
 
 | Exception | Raised when |
 |---|---|
@@ -216,7 +216,7 @@ Any fault that is not retried, or that persists after its retries, raises an exc
 - Indicative duration on Free for a workspace of ~70 data sources and ~8,500 rows: about 5 min without row bodies, 50+ min with them.
 
 ## Telemetry
-Every limiter wait and retry transition emits one JSON event on the `notion2pg_bulk` logger (the package itself only adds a `NullHandler`): `throttle_wait`, `retry_scheduled`, `retries_exhausted`, `request_failed` and `discovery_stopped` (a 404 on a lookup made only to extend discovery, which ends that path). Each carries `level` (`info` for `throttle_wait` and `discovery_stopped`, `warning` for `retry_scheduled`, `error` for the other two; the record is logged at that level), `ts`, `propagation_id`, the locus (`phase`, `entity_type`, `entity_id`, `method`, `endpoint`), the fault's scalars (`http_status`, `code`, `rate_limit_reason`, `request_id`, `exception_type`) and the Notion error `message`. Headers, the token and request or response bodies are never included; strings are cut at 512 characters. The JSON Schema ships with the package as `notion2pg_bulk/telemetry.schema.json`; the event record is also attached to each log record as `record.telemetry`.
+Every limiter wait and retry transition emits one JSON event on the `notion2pg_bulk` logger (the package itself only adds a `NullHandler`): `throttle_wait`, `retry_scheduled`, `retries_exhausted`, `request_failed` and `discovery_stopped` (a path ends: `reason` is `not_found` for a 404 on a lookup made only to extend discovery, `in_trash` or `archived` for an object returned out of scope). Each carries `level` (`info` for `throttle_wait` and `discovery_stopped`, `warning` for `retry_scheduled`, `error` for the other two; the record is logged at that level), `ts`, `propagation_id`, the locus (`phase`, `entity_type`, `entity_id`, `method`, `endpoint`), the fault's scalars (`http_status`, `code`, `rate_limit_reason`, `request_id`, `exception_type`) and the Notion error `message`. Headers, the token and request or response bodies are never included; strings are cut at 512 characters. The JSON Schema ships with the package as `notion2pg_bulk/telemetry.schema.json`; the event record is also attached to each log record as `record.telemetry`.
 
 ## Notion version
 **Last tested Notion-Version**: `2026-03-11`

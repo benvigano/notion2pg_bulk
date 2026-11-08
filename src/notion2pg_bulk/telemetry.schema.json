@@ -373,6 +373,13 @@
         "locus": {
           "$ref": "#/$defs/locus"
         },
+        "reason": {
+          "enum": [
+            "not_found",
+            "in_trash",
+            "archived"
+          ]
+        },
         "attempt": {
           "type": "integer",
           "minimum": 1
@@ -390,6 +397,7 @@
         "ts",
         "propagation_id",
         "locus",
+        "reason",
         "attempt",
         "anomaly",
         "context"

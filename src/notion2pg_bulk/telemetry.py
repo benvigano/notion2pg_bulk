@@ -182,8 +182,11 @@ class RequestFailed(_Event):
 
 @dataclass(frozen=True)
 class DiscoveryStopped(_Event):
-    """A lookup made only to extend discovery found nothing (404); that path ends."""
+    """A path ends: a lookup made only to extend discovery found nothing (404), or an
+    object fetched by ID is trashed or archived (out of the snapshot's scope).
+    """
 
+    reason: Literal["not_found", "in_trash", "archived"]
     attempt: int
     anomaly: Anomaly
     context: Context
