@@ -5,7 +5,7 @@ description = "Snapshot an entire Notion workspace into a PostgreSQL database."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "notion-client>=3.0.0,<4",
+    "httpx>=0.27,<1",
     "psycopg2-binary>=2.9.5,<3",
     "sqlalchemy>=2.0.0,<3",
 ]

@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/benvigano/notion2pg_bulk/telemetry.schema.json",
+  "title": "notion2pg_bulk telemetry event",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/throttle_wait"
+    },
+    {
+      "$ref": "#/$defs/retry_scheduled"
+    },
+    {
+      "$ref": "#/$defs/retries_exhausted"
+    },
+    {
+      "$ref": "#/$defs/request_failed"
+    }
+  ],
+  "$defs": {
+    "locus": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "enum": [
+            "discovery",
+            "schema",
+            "rows",
+            "views",
+            "bodies",
+            null
+          ]
+        },
+        "entity_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "entity_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "phase",
+        "entity_type",
+        "entity_id",
+        "method",
+        "endpoint"
+      ]
+    },
+    "anomaly": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "http_status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "rate_limit_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "exception_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "http_status",
+        "code",
+        "rate_limit_reason",
+        "request_id",
+        "exception_type"
+      ]
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "message"
+      ]
+    },
+    "throttle_wait": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "throttle_wait"
+        },
+        "ts": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "propagation_id": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "locus": {
+          "$ref": "#/$defs/locus"
+        },
+        "limiter": {
+          "enum": [
+            "connection",
+            "data_source_query"
+          ]
+        },
+        "wait_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "event",
+        "ts",
+        "propagation_id",
+        "locus",
+        "limiter",
+        "wait_s"
+      ]
+    },
+    "retry_scheduled": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "retry_scheduled"
+        },
+        "ts": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "propagation_id": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "locus": {
+          "$ref": "#/$defs/locus"
+        },
+        "fault": {
+          "enum": [
+            "rate_limited",
+            "service_overload",
+            "server_error",
+            "transport"
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "delay_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "delay_source": {
+          "enum": [
+            "retry_after",
+            "backoff"
+          ]
+        },
+        "anomaly": {
+          "$ref": "#/$defs/anomaly"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        }
+      },
+      "required": [
+        "event",
+        "ts",
+        "propagation_id",
+        "locus",
+        "fault",
+        "attempt",
+        "max_attempts",
+        "delay_s",
+        "delay_source",
+        "anomaly",
+        "context"
+      ]
+    },
+    "retries_exhausted": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "retries_exhausted"
+        },
+        "ts": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "propagation_id": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "locus": {
+          "$ref": "#/$defs/locus"
+        },
+        "fault": {
+          "enum": [
+            "rate_limited",
+            "service_overload",
+            "server_error",
+            "transport"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "enum": [
+            "max_attempts",
+            "wait_exceeds_limit"
+          ]
+        },
+        "anomaly": {
+          "$ref": "#/$defs/anomaly"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        }
+      },
+      "required": [
+        "event",
+        "ts",
+        "propagation_id",
+        "locus",
+        "fault",
+        "attempts",
+        "max_attempts",
+        "reason",
+        "anomaly",
+        "context"
+      ]
+    },
+    "request_failed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "const": "request_failed"
+        },
+        "ts": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "propagation_id": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "locus": {
+          "$ref": "#/$defs/locus"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "anomaly": {
+          "$ref": "#/$defs/anomaly"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        }
+      },
+      "required": [
+        "event",
+        "ts",
+        "propagation_id",
+        "locus",
+        "attempt",
+        "anomaly",
+        "context"
+      ]
+    }
+  }
+}

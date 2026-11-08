@@ -3,14 +3,15 @@ Main migration class for Notion workspace to PostgreSQL migration.
 """
 
 import json
+import uuid
 import re
 from typing import Dict, List, Any, Optional
-from notion_client import Client, RetryOptions
 from sqlalchemy import Engine, MetaData, Table, text
 from sqlalchemy.dialects.postgresql import insert
 
 from .schema_mapper import NotionPropertyMapper
-from .rate_limiter import RateLimiter
+from .notion_http import NotionHTTP, Plan
+from .telemetry import Telemetry
 
 # Fixed column names in database_content tables; user properties may not use these.
 _BUILTIN_COLUMN_NAMES = frozenset({
@@ -27,6 +28,8 @@ class NotionMigrator:
         notion_token: str,
         db_connection: Engine,
         fetch_page_content: bool = False,
+        plan: Plan = "free",
+        propagation_id: Optional[str] = None,
     ):
         """
         Initialize the migrator.
@@ -41,19 +44,9 @@ class NotionMigrator:
                 default) the column is omitted entirely and only the structured
                 property data available from the bulk query is stored.
         """
-        self.notion = Client(
-            auth=notion_token,
-            notion_version="2026-03-11",
-            timeout_ms=30_000,
-            retry=RetryOptions(
-                max_retries=5,
-                initial_retry_delay_ms=500,
-                max_retry_delay_ms=30_000,
-            ),
-        )
+        self.http = NotionHTTP(notion_token, plan, Telemetry(propagation_id or str(uuid.uuid4())))
         self.db_engine = db_connection
         self.fetch_page_content = fetch_page_content
-        self.rate_limiter = RateLimiter(requests_per_second=2.5)
         self.metadata = MetaData()
         self.property_mapper = NotionPropertyMapper()
 
@@ -75,7 +68,6 @@ class NotionMigrator:
         """Run the complete migration process."""
         self._test_database_connection()
         self._require_empty_database()
-        self._test_notion_connection()
 
         databases = self._get_databases()
         if not databases:
@@ -159,10 +151,6 @@ class NotionMigrator:
         with self.db_engine.connect() as conn:
             conn.execute(text("SELECT 1"))
 
-    def _test_notion_connection(self) -> None:
-        """Test Notion API connection."""
-        self.rate_limiter.rate_limited_call(self.notion.users.me)
-
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------
@@ -173,11 +161,10 @@ class NotionMigrator:
         start_cursor = None
 
         while True:
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.search,
-                filter={"property": "object", "value": "data_source"},
-                start_cursor=start_cursor,
-            )
+            body: Dict[str, Any] = {"filter": {"property": "object", "value": "data_source"}}
+            if start_cursor:
+                body["start_cursor"] = start_cursor
+            response = self.http.request("POST", "search", "/v1/search", body=body)
 
             for item in response.get("results", []):
                 raw_data_sources.append(item)
@@ -197,14 +184,11 @@ class NotionMigrator:
                     "cannot migrate without a database container."
                 )
 
-            data_source_details = self.rate_limiter.rate_limited_call(
-                self.notion.request,
-                f"data_sources/{data_source_id}",
-                "GET",
+            data_source_details = self.http.request(
+                "GET", f"data_sources/{data_source_id}", "/v1/data_sources/{data_source_id}"
             )
-            database_details = self.rate_limiter.rate_limited_call(
-                self.notion.databases.retrieve,
-                database_id=database_id,
+            database_details = self.http.request(
+                "GET", f"databases/{database_id}", "/v1/databases/{database_id}"
             )
 
 
@@ -243,9 +227,7 @@ class NotionMigrator:
             if start_cursor:
                 kwargs["start_cursor"] = start_cursor
 
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.search, **kwargs
-            )
+            response = self.http.request("POST", "search", "/v1/search", body=kwargs)
 
             for page in response.get("results", []):
                 parent = page.get("parent", {})
@@ -525,11 +507,12 @@ class NotionMigrator:
             if start_cursor:
                 body["start_cursor"] = start_cursor
 
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.request,
-                f"data_sources/{data_source_id}/query",
+            response = self.http.request(
                 "POST",
+                f"data_sources/{data_source_id}/query",
+                "/v1/data_sources/{data_source_id}/query",
                 body=body,
+                is_data_source_query=True,
             )
             page_batches += 1
 
@@ -560,9 +543,7 @@ class NotionMigrator:
             if start_cursor:
                 query["start_cursor"] = start_cursor
 
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.request, "views", "GET", query=query
-            )
+            response = self.http.request("GET", "views", "/v1/views", query=query)
 
             for view_ref in response.get("results", []):
                 view_ids.append(view_ref["id"])
@@ -576,9 +557,7 @@ class NotionMigrator:
 
         rows = []
         for view_id in view_ids:
-            view = self.rate_limiter.rate_limited_call(
-                self.notion.request, f"views/{view_id}", "GET"
-            )
+            view = self.http.request("GET", f"views/{view_id}", "/v1/views/{view_id}")
             rows.append({
                 "view_id": view["id"],
                 "name": (view.get("name") or ""),
@@ -671,11 +650,11 @@ class NotionMigrator:
         start_cursor = prop_data.get("next_cursor")
 
         while start_cursor:
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.pages.properties.retrieve,
-                page_id=page_id,
-                property_id=prop_id,
-                start_cursor=start_cursor,
+            response = self.http.request(
+                "GET",
+                f"pages/{page_id}/properties/{prop_id}",
+                "/v1/pages/{page_id}/properties/{property_id}",
+                query={"start_cursor": start_cursor},
             )
             all_items.extend(response.get(prop_type, []))
             if not response.get("has_more"):
@@ -759,8 +738,11 @@ class NotionMigrator:
             if start_cursor:
                 kwargs["start_cursor"] = start_cursor
 
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.blocks.children.list, **kwargs
+            response = self.http.request(
+                "GET",
+                f"blocks/{block_id}/children",
+                "/v1/blocks/{block_id}/children",
+                query={k: v for k, v in kwargs.items() if k != "block_id"},
             )
 
             for block in response.get("results", []):
@@ -902,8 +884,11 @@ class NotionMigrator:
             if start_cursor:
                 kwargs["start_cursor"] = start_cursor
 
-            response = self.rate_limiter.rate_limited_call(
-                self.notion.blocks.children.list, **kwargs
+            response = self.http.request(
+                "GET",
+                f"blocks/{block_id}/children",
+                "/v1/blocks/{block_id}/children",
+                query={k: v for k, v in kwargs.items() if k != "block_id"},
             )
 
             blocks = response.get("results", [])
