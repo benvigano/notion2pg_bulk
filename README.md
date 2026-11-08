@@ -38,7 +38,7 @@ _Python package to snapshot a Notion workspace to a PostgreSQL database, within 
     - formula and rollup definitions; expressions stored as returned, including internal `{{notion:…}}` references
   - **Rows** (pages): every row the data source queries return, including data sources over 10k rows
     - fields: icon, `is_locked`, `public_url`
-    - property values: every type not listed in the "Not captured" section, each losslessly in its own column, including status, unique ID, place, wiki verification, date ranges and time zones, and relations with more than 25 links
+    - property values: every type not listed in the "Not captured" section, each losslessly in its own column, including status, unique ID, place, wiki verification, date ranges, and relations with more than 25 links
     - body: blocks (optional, on by default)
 - **Blocks** (page and row content, any nesting depth)
   - all JSON-only types: paragraph, headings 1–4 (including toggle headings), bulleted/numbered list, to_do, toggle, quote, callout, divider, breadcrumb, table_of_contents, code (including mermaid), bookmark, link_preview, equation, table/table_row, column_list/column, tab, child_page, child_database, link_to_page
@@ -171,7 +171,7 @@ A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, w
 | Select | `TEXT` | Option ID; name, color and description in `notion.options` |
 | Status | `TEXT` | Option ID; group in `notion.options`, default option in `config` |
 | Multi-select | `TEXT[]` | Option IDs |
-| Date | `JSONB` | `{start, end, time_zone}` as returned: date-only values stay `YYYY-MM-DD`, datetimes keep their offset. Query with expressions, e.g. `("Due"->>'start')` |
+| Date | `JSONB` | `{start, end, time_zone}` as returned: date-only values stay `YYYY-MM-DD`, datetimes keep their offset, so the instant is exact. A named time zone may come back only as that offset, with `time_zone: null`. Query with expressions, e.g. `("Due"->>'start')` |
 | Checkbox | `BOOLEAN` | |
 | URL | `TEXT` | |
 | Email | `TEXT` | |
