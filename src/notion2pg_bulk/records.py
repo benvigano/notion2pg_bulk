@@ -150,8 +150,10 @@ class ViewRecord:
 # ---------------------------------------------------------------- parsing helpers
 
 HOSTED_FILE_ICON_TYPES = frozenset({"file", "file_upload"})
-VIEW_METADATA_KEYS = frozenset(
-    {"object", "id", "parent", "url", "created_time", "created_by", "last_edited_time", "last_edited_by"}
+# request_id is part of the response, not of the view object, and differs on every
+# response: keeping it would make two snapshots of an unchanged view differ.
+VIEW_EXCLUDED_KEYS = frozenset(
+    {"object", "id", "parent", "url", "created_time", "created_by", "last_edited_time", "last_edited_by", "request_id"}
 )
 
 
@@ -284,5 +286,5 @@ def parse_view(obj: Mapping[str, Any]) -> ViewRecord:
         dashboard_view_id=obj.get("dashboard_view_id"),
         name=obj.get("name"),
         type=obj["type"],
-        content={key: value for key, value in obj.items() if key not in VIEW_METADATA_KEYS},
+        content={key: value for key, value in obj.items() if key not in VIEW_EXCLUDED_KEYS},
     )

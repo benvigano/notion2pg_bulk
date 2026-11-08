@@ -155,7 +155,9 @@ def view(view_id: str, database_id: str, data_source_id: Optional[str], view_typ
 
 
 def respond_json(status: int, body: Any) -> httpx.Response:
-    """A JSON response that keeps Decimal values exact."""
+    """A JSON response that keeps Decimal values exact; like Notion, it carries a fresh request_id."""
+    if isinstance(body, dict):
+        body = {**body, "request_id": body.get("request_id") or new_id()}
     return httpx.Response(status, content=dumps(body).encode(), headers={"content-type": "application/json"})
 
 
