@@ -37,7 +37,7 @@ _Python package to snapshot an entire Notion workspace to a PostgreSQL database.
     - formula and rollup definitions; expressions stored as returned, including internal `{{notion:…}}` references
   - **Rows** (pages): all of them, including data sources over 10k rows
     - fields: icon, `is_locked`, `public_url`
-    - property values: every type not listed in A, each losslessly in its own column, including status, unique ID, place, wiki verification, date ranges and time zones, and relations with more than 25 links
+    - property values: every type not listed in the "Not captured" section, each losslessly in its own column, including status, unique ID, place, wiki verification, date ranges and time zones, and relations with more than 25 links
     - body: blocks (optional, on by default)
 - **Blocks** (page and row content, any nesting depth)
   - all JSON-only types: paragraph, headings 1–4 (including toggle headings), bulleted/numbered list, to_do, toggle, quote, callout, divider, breadcrumb, table_of_contents, code (including mermaid), bookmark, embed, link_preview, equation, table/table_row, column_list/column, tab, child_page, child_database, link_to_page
@@ -64,7 +64,7 @@ uv add notion2pg-bulk
 
 ## PostgreSQL mapping
 
-- **One table per data source**, holding its rows: primary key = row page ID, then exactly one column per property. Every column is lossless: with the shared tables it references (e.g. options), it reproduces everything the API returns for that value. Exceptions: the property types listed in A have no column.
+- **One table per data source**, holding its rows: primary key = row page ID, then exactly one column per property. Every column is lossless: with the shared tables it references (e.g. options), it reproduces everything the API returns for that value. Exceptions: the property types listed in the "Not captured" section have no column.
 - **Shared tables, keyed by Notion IDs**:
   - catalog: data source → table name, property → column name. Names are derived once and kept across Notion renames; they never encode identity.
   - databases (original and linked), data sources, properties (full configuration, including formula and rollup definitions), select/multi-select/status options, views
