@@ -137,7 +137,7 @@ class ThrottleWait(_Event):
     limiter: Literal["connection", "data_source_query"]
     wait_s: float
     event: Literal["throttle_wait"] = field(default="throttle_wait")
-    level: Literal["info"] = field(default="info")
+    level: Literal["debug"] = field(default="debug")
 
 
 @dataclass(frozen=True)
@@ -196,7 +196,7 @@ class DiscoveryStopped(_Event):
 
 TelemetryEvent = Union[ThrottleWait, RetryScheduled, RetriesExhausted, RequestFailed, DiscoveryStopped]
 
-_LOGGING_LEVELS = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
+_LOGGING_LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
 
 
 def _bounded(value: Any) -> Any:

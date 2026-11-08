@@ -302,7 +302,7 @@ def test_every_event_carries_its_level(clock, telemetry_events):
                          is_data_source_query=True)
     finally:
         logging.getLogger("notion2pg_bulk").removeHandler(spy)
-    expected = {"throttle_wait": (logging.INFO, "info"), "retry_scheduled": (logging.WARNING, "warning"),
+    expected = {"throttle_wait": (logging.DEBUG, "debug"), "retry_scheduled": (logging.WARNING, "warning"),
                 "retries_exhausted": (logging.ERROR, "error"), "request_failed": (logging.ERROR, "error")}
     assert {event for _, _, event in records} == set(expected)
     assert all((levelno, level) == expected[event] for levelno, level, event in records)
@@ -317,7 +317,7 @@ def test_schema_rejects_a_wrong_level():
              "limiter": "connection", "wait_s": 1.0}
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(event, load_schema())
-    jsonschema.validate({**event, "level": "info"}, load_schema())
+    jsonschema.validate({**event, "level": "debug"}, load_schema())
 
 
 def test_missing_ok_turns_a_404_into_none(clock, telemetry_events):
