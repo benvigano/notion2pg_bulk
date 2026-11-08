@@ -1,27 +1,26 @@
-"""Command line interface for the Notion to PostgreSQL migration tool."""
+"""Command line interface: ``notion2pg-bulk``."""
+
+from __future__ import annotations
 
 import argparse
 import logging
 import os
 import sys
+from typing import Optional, Sequence
 
-import sqlalchemy as sa
-
-from .migrator import NotionMigrator
 from .notion_http import PLAN_BUDGETS
+from .orchestrate import snapshot
 from .telemetry import LOGGER_NAME, JSONFormatter
 
 
-def main() -> int:
-    """Run the CLI.
-
-    :returns: Process exit code.
-    """
+def build_parser() -> argparse.ArgumentParser:
+    """:returns: The CLI argument parser."""
     parser = argparse.ArgumentParser(
-        description="Migrate Notion workspace to PostgreSQL database"
+        prog="notion2pg-bulk",
+        description="Snapshot a Notion workspace into an empty PostgreSQL database.",
     )
-    parser.add_argument("--notion-token", help="Notion integration token (or set NOTION_TOKEN env var)")
-    parser.add_argument("--database-url", help="PostgreSQL connection string (or set DATABASE_URL env var)")
+    parser.add_argument("--notion-token", help="Notion integration token (or set NOTION_TOKEN)")
+    parser.add_argument("--database-url", help="PostgreSQL URL of an empty database (or set DATABASE_URL)")
     parser.add_argument(
         "--plan",
         choices=sorted(PLAN_BUDGETS),
@@ -29,18 +28,29 @@ def main() -> int:
         help="Notion workspace plan; sets the request budget (default: free)",
     )
     parser.add_argument(
-        "--fetch-page-content",
-        action="store_true",
-        help="Fetch and store the full block tree for every database row.",
+        "--no-row-bodies",
+        dest="row_bodies",
+        action="store_false",
+        help="Skip the bodies (blocks) of data source rows",
     )
-    args = parser.parse_args()
+    parser.add_argument("--propagation-id", help="Identifier carried by every telemetry event")
+    return parser
 
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the CLI. Telemetry is written to stderr as one JSON object per line.
+
+    :param argv: Arguments (defaults to ``sys.argv[1:]``).
+    :returns: Process exit code (failures raise, exiting non-zero).
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
     notion_token = args.notion_token or os.getenv("NOTION_TOKEN")
     if not notion_token:
-        parser.error("Notion token required: set --notion-token or NOTION_TOKEN")
+        parser.error("a Notion token is required: --notion-token or NOTION_TOKEN")
     database_url = args.database_url or os.getenv("DATABASE_URL")
     if not database_url:
-        parser.error("Database URL required: set --database-url or DATABASE_URL")
+        parser.error("a database URL is required: --database-url or DATABASE_URL")
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JSONFormatter())
@@ -48,12 +58,13 @@ def main() -> int:
     package_logger.addHandler(handler)
     package_logger.setLevel(logging.INFO)
 
-    NotionMigrator(
-        notion_token=notion_token,
-        db_connection=sa.create_engine(database_url),
-        fetch_page_content=args.fetch_page_content,
+    snapshot(
+        notion_token,
+        database_url,
         plan=args.plan,
-    ).run()
+        row_bodies=args.row_bodies,
+        propagation_id=args.propagation_id,
+    )
     return 0
 
 

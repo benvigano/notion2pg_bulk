@@ -53,3 +53,42 @@ class TelemetryCapture(logging.Handler):
         logger = logging.getLogger(LOGGER_NAME)
         logger.removeHandler(self)
         logger.setLevel(self._previous_level)
+
+
+def run_snapshot(fake, database_url: str, clock: FakeClock, *, row_bodies: bool = True, plan: str = "free") -> None:
+    """Run the snapshot against a fake Notion workspace and a real database."""
+    from notion2pg_bulk.notion_api import NotionAPI
+    from notion2pg_bulk.notion_http import NotionHTTP
+    from notion2pg_bulk.orchestrate import create_target_engine, run
+    from notion2pg_bulk.telemetry import Telemetry
+
+    engine = create_target_engine(database_url)
+    try:
+        with NotionHTTP("test-token", plan, Telemetry("test-run"), transport=fake.transport(),
+                        clock=clock, sleep=clock.sleep) as http:
+            run(engine, NotionAPI(http), row_bodies=row_bodies)
+    finally:
+        engine.dispose()
+
+
+def dump_database(database_url: str) -> Dict[str, List[tuple]]:
+    """Every row of every table in the ``notion`` and ``rows`` schemas, sorted."""
+    from sqlalchemy import text
+    from notion2pg_bulk.orchestrate import create_target_engine
+
+    engine = create_target_engine(database_url)
+    try:
+        with engine.connect() as conn:
+            names = conn.execute(text(
+                "SELECT table_schema, table_name FROM information_schema.tables "
+                "WHERE table_schema IN ('notion', 'rows') ORDER BY 1, 2"
+            )).fetchall()
+            preparer = conn.dialect.identifier_preparer
+            result: Dict[str, List[tuple]] = {}
+            for schema_name, table_name in names:
+                qualified = f"{preparer.quote(schema_name)}.{preparer.quote(table_name)}"
+                rows = conn.execute(text(f"SELECT * FROM {qualified}")).fetchall()
+                result[f"{schema_name}.{table_name}"] = sorted((tuple(map(repr, row)) for row in rows))
+            return result
+    finally:
+        engine.dispose()

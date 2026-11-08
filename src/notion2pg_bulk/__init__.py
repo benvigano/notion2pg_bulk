@@ -9,13 +9,13 @@ from .errors import (
     SnapshotIntegrityError,
     TargetNotEmptyError,
 )
-from .migrator import NotionMigrator
+from .orchestrate import snapshot
 from .telemetry import LOGGER_NAME
 
 logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
 
 __all__ = [
-    "NotionMigrator",
+    "snapshot",
     "Notion2PgError",
     "NotionAPIError",
     "RetriesExhaustedError",
