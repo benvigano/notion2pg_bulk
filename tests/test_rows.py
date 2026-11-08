@@ -108,7 +108,7 @@ def test_windowing_reads_past_the_result_limit(clock):
         obj = row(ds_id, db_id, created=stamp)
         fake.add_row(ds_id, obj)
         expected.append(obj["id"])
-    seen = [o["id"] for batch in fetch.query_rows(api_for(fake, clock), ds_id) for o in batch]
+    seen = [o["id"] for batch in fetch.query_rows(api_for(fake, clock), ds_id) for o in batch.rows]
     assert sorted(seen) == sorted(expected) and len(seen) == len(set(seen))
     bodies = [r for r in fake.requests if r.url.path.endswith("/query")]
     assert all(b'"created_time","direction":"ascending"' in r.content for r in bodies)
@@ -131,7 +131,7 @@ def test_wiki_data_source_results_are_not_rows(clock):
     fake.add_row(ds_id, real)
     fake.query_extras[ds_id] = [data_source(new_id(), db_id, "Child", {"Name": TITLE},
                                             created_time="2026-01-02T00:00:00.000Z")]
-    seen = [o["id"] for batch in fetch.query_rows(api_for(fake, clock), ds_id) for o in batch]
+    seen = [o["id"] for batch in fetch.query_rows(api_for(fake, clock), ds_id) for o in batch.rows]
     assert seen == [real["id"]]
 
 
@@ -143,7 +143,7 @@ def test_wiki_data_source_results_advance_the_window(clock):
         fake.add_row(ds_id, obj)
     fake.query_extras[ds_id] = [data_source(new_id(), db_id, "Child", {"Name": TITLE}, created_time=minute(1)),
                                 data_source(new_id(), db_id, "Child2", {"Name": TITLE}, created_time=minute(2))]
-    seen = [o["id"] for batch in fetch.query_rows(api_for(fake, clock), ds_id) for o in batch]
+    seen = [o["id"] for batch in fetch.query_rows(api_for(fake, clock), ds_id) for o in batch.rows]
     assert sorted(seen) == sorted(o["id"] for o in rows)
 
 

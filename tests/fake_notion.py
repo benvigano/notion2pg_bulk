@@ -34,10 +34,10 @@ def rich_text(content: str, **annotations: Any) -> JSON:
     }
 
 
-def page_mention(page_id: str) -> JSON:
+def page_mention(page_id: str, kind: str = "page") -> JSON:
     return {
         "type": "mention",
-        "mention": {"type": "page", "page": {"id": page_id}},
+        "mention": {"type": kind, kind: {"id": page_id}},
         "annotations": {"bold": False, "italic": False, "strikethrough": False,
                         "underline": False, "code": False, "color": "default"},
         "plain_text": "Untitled",
@@ -177,6 +177,7 @@ class FakeNotion:
     rows: Dict[str, List[str]] = field(default_factory=dict)
     query_extras: Dict[str, List[JSON]] = field(default_factory=dict)
     children: Dict[str, List[JSON]] = field(default_factory=dict)
+    blocks: Dict[str, JSON] = field(default_factory=dict)
     views: Dict[str, JSON] = field(default_factory=dict)
     property_items: Dict[Tuple[str, str], List[JSON]] = field(default_factory=dict)
     search_pages: List[str] = field(default_factory=list)
@@ -208,6 +209,8 @@ class FakeNotion:
 
     def set_children(self, parent_id: str, blocks: List[JSON]) -> None:
         self.children[parent_id] = blocks
+        for child in blocks:
+            self.blocks[child["id"]] = child
 
     def add_view(self, v: JSON) -> None:
         self.views[v["id"]] = v
@@ -240,6 +243,8 @@ class FakeNotion:
             return self._get(self.pages, parts[1])
         if method == "GET" and parts[0] == "pages" and len(parts) == 4 and parts[2] == "properties":
             return self._property(parts[1], parts[3], query)
+        if method == "GET" and parts[0] == "blocks" and len(parts) == 2:
+            return self._get(self.blocks, parts[1])
         if method == "GET" and parts[0] == "blocks" and parts[2:] == ["children"]:
             return self._list(self.children.get(parts[1], []), query, extra={"type": "block", "block": {}})
         if method == "GET" and parts == ["views"]:

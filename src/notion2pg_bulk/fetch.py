@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Iterator, List, Literal, Mapping, Optional, Sequence, Tuple
 
 from .errors import SnapshotIntegrityError
 from .mapping import PAGINATED_TYPES, column_type, column_value
@@ -74,15 +75,6 @@ def discover_standalone_pages(api: NotionAPI) -> List[PageRecord]:
 def is_live(obj: Mapping[str, Any]) -> bool:
     """Whether a page is in scope: neither trashed nor archived."""
     return not obj.get("in_trash") and not obj.get("is_archived")
-
-
-def fetch_child_page(api: NotionAPI, page_id: str) -> Optional[PageRecord]:
-    """Retrieve a page found as a ``child_page`` block.
-
-    :returns: The page, or ``None`` when it is trashed or archived.
-    """
-    obj = api.retrieve_page(page_id)
-    return parse_page(obj, is_row=False) if is_live(obj) else None
 
 
 # ---------------------------------------------------------------- rows
@@ -185,13 +177,22 @@ def parse_row(api: NotionAPI, obj: Mapping[str, Any], data_source: DataSourceRec
     return RowRecord(page=parse_page(obj, is_row=True), values=values)
 
 
-def query_rows(api: NotionAPI, data_source_id: str) -> Iterator[List[Mapping[str, Any]]]:
-    """Yield every row page of a data source, one list per query response page.
+@dataclass(frozen=True)
+class QueryBatch:
+    """One query response page: new rows, and child data sources (wikis) seen in it."""
+
+    rows: List[Mapping[str, Any]]
+    child_data_source_ids: List[str]
+
+
+def query_rows(api: NotionAPI, data_source_id: str) -> Iterator[QueryBatch]:
+    """Yield every row page of a data source, one batch per query response page.
 
     A single query stops at 10,000 results. Queries sort by ``created_time``
     ascending; whenever one is cut off, the next starts ``on_or_after`` the
-    last ``created_time`` seen. Rows are de-duplicated by ID. Non-page results
-    (child data sources of wikis) advance the window but are not rows.
+    last ``created_time`` seen. Results are de-duplicated by ID. Non-page
+    results (child data sources of wikis) advance the window and are reported
+    separately; they are not rows.
 
     :raises SnapshotIntegrityError: A window cannot advance (more than 10,000
         results share one ``created_time`` minute), or a query is incomplete
@@ -217,9 +218,13 @@ def query_rows(api: NotionAPI, data_source_id: str) -> Iterator[List[Mapping[str
             for result in results:
                 if last_created is None or result["created_time"] > last_created:
                     last_created = result["created_time"]
-            batch = [result for result in results if result["object"] == "page" and result["id"] not in seen]
-            seen.update(result["id"] for result in batch)
-            if batch:
+            fresh = [result for result in results if result["id"] not in seen]
+            seen.update(result["id"] for result in fresh)
+            batch = QueryBatch(
+                rows=[result for result in fresh if result["object"] == "page"],
+                child_data_source_ids=[result["id"] for result in fresh if result["object"] == "data_source"],
+            )
+            if batch.rows or batch.child_data_source_ids:
                 yield batch
         if not limit_reached:
             return
@@ -258,16 +263,6 @@ def fetch_view(api: NotionAPI, view_id: str) -> ViewRecord:
 def fetch_views(api: NotionAPI, data_source_ids: Iterable[str], database_ids: Iterable[str]) -> List[ViewRecord]:
     """Retrieve every view listed for the given data sources and original databases, once each."""
     return [fetch_view(api, view_id) for view_id in list_view_ids(api, data_source_ids, database_ids)]
-
-
-def linked_databases_from_views(views: Iterable[ViewRecord], original_ids: Iterable[str]) -> List[DatabaseRecord]:
-    """:returns: Linked database containers seen as view parents (ID only)."""
-    originals = set(original_ids)
-    linked: Dict[str, DatabaseRecord] = {}
-    for record in views:
-        if record.database_id not in originals:
-            linked.setdefault(record.database_id, DatabaseRecord(database_id=record.database_id, is_linked=True))
-    return list(linked.values())
 
 
 def linked_database_from_block(block: BlockRecord) -> DatabaseRecord:
@@ -347,9 +342,111 @@ def fetch_page_body(api: NotionAPI, page_id: str) -> List[BlockRecord]:
     return records
 
 
-def database_ids_of(data_sources: Iterable[DataSourceRecord]) -> List[str]:
-    """:returns: The containing database IDs, in first-seen order."""
-    ids: Dict[str, None] = {}
-    for data_source in data_sources:
-        ids.setdefault(data_source.database_id, None)
-    return list(ids)
+# ---------------------------------------------------------------- references (discovery paths)
+
+RefKind = Literal["page", "block", "database", "original_database", "data_source", "view"]
+Ref = Tuple[RefKind, str]
+"""A documented path to an entity: ``database`` may be original or linked (resolved
+through its views); ``original_database`` is the parent of a data source."""
+
+_PARENT_KINDS: Dict[str, RefKind] = {
+    "page_id": "page",
+    "block_id": "block",
+    "database_id": "database",
+    "data_source_id": "data_source",
+}
+_MENTION_KINDS: Dict[str, RefKind] = {"page": "page", "database": "database"}
+
+
+def parent_reference(parent: Optional[Parent]) -> Optional[Ref]:
+    """:returns: The reference to a parent, or ``None`` (workspace, agent, unknown)."""
+    if parent is None or parent.id is None or parent.type not in _PARENT_KINDS:
+        return None
+    return _PARENT_KINDS[parent.type], parent.id
+
+
+def mention_references(value: Any) -> Iterator[Ref]:
+    """Yield the pages and databases mentioned anywhere in a JSON value (rich text)."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            mention = item.get("mention")
+            if item.get("type") == "mention" and isinstance(mention, dict):
+                kind = _MENTION_KINDS.get(mention.get("type"))
+                target = mention.get(mention.get("type")) if kind else None
+                if kind and isinstance(target, dict) and target.get("id"):
+                    yield kind, target["id"]
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
+def block_references(block: BlockRecord) -> Iterator[Ref]:
+    """Yield what a block leads to: child pages, ``link_to_page`` targets, mentions.
+
+    ``child_database`` blocks are resolved separately (they carry a location).
+    """
+    if block.type == "child_page":
+        yield "page", block.block_id
+    if block.type == "link_to_page":
+        target_type = block.content.get("type")
+        if target_type in _PARENT_KINDS and block.content.get(target_type):
+            yield _PARENT_KINDS[target_type], block.content[target_type]
+    yield from mention_references(block.content)
+
+
+def data_source_references(data_source: DataSourceRecord) -> Iterator[Ref]:
+    """Yield the containing database (up), relation targets and mentions (sideways)."""
+    if data_source.parent.type == "data_source_id":
+        yield "data_source", data_source.parent.id
+    yield "original_database", data_source.database_id
+    for prop in data_source.properties:
+        if prop.type == "relation":
+            target = (prop.config.get("relation") or {}).get("data_source_id")
+            if target:
+                yield "data_source", target
+    yield from mention_references([data_source.title, data_source.description])
+
+
+def database_references(database: DatabaseRecord) -> Iterator[Ref]:
+    """Yield the parent (up) and mentions in title and description of a database."""
+    parent = parent_reference(database.parent)
+    if parent is not None:
+        yield parent
+    yield from mention_references([database.title, database.description])
+
+
+def page_references(page: PageRecord) -> Iterator[Ref]:
+    """Yield the parent (up) and title mentions of a standalone page."""
+    parent = parent_reference(page.parent)
+    if parent is not None:
+        yield parent
+    yield from mention_references(page.title)
+
+
+def view_references(view: ViewRecord) -> Iterator[Ref]:
+    """Yield the data source, the dashboard and the widget views a view names."""
+    if view.data_source_id:
+        yield "data_source", view.data_source_id
+    if view.dashboard_view_id:
+        yield "view", view.dashboard_view_id
+    stack: List[Any] = [view.content]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            for widget in item.get("widgets") or []:
+                if isinstance(widget, dict) and widget.get("view_id"):
+                    yield "view", widget["view_id"]
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
+def fetch_referenced_page(api: NotionAPI, page_id: str) -> Optional[Mapping[str, Any]]:
+    """Retrieve a page reached through a discovery path.
+
+    :returns: The page object, or ``None`` if it is not found, trashed or archived.
+    """
+    obj = api.retrieve_page(page_id, missing_ok=True)
+    return obj if obj is not None and is_live(obj) else None

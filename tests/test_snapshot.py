@@ -197,8 +197,8 @@ def test_loading_same_records_twice_is_idempotent(database_url, clock):
             load.load_databases(conn, [fetch.fetch_database(api, db)[0] for db in (ws.projects_db, ws.tasks_db)])
             for source in sources:
                 table = load.load_data_source(conn, source)
-                for objects in fetch.query_rows(api, source.data_source_id):
-                    load.load_rows(conn, source, table, [fetch.parse_row(api, o, source) for o in objects])
+                for batch in fetch.query_rows(api, source.data_source_id):
+                    load.load_rows(conn, source, table, [fetch.parse_row(api, o, source) for o in batch.rows])
             load.load_pages(conn, fetch.discover_standalone_pages(api))
             for page_id in (ws.standalone_page, ws.project_row):
                 load.load_page_body(conn, page_id, fetch.fetch_page_body(api, page_id))
