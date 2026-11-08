@@ -249,3 +249,27 @@ def test_telemetry_carries_locus_through_the_snapshot(database_url, clock, telem
     assert retries[0]["locus"]["entity_type"] == "data_source"
     assert retries[0]["locus"]["endpoint"] == "/v1/data_sources/{data_source_id}/query"
     assert {e["propagation_id"] for e in telemetry_events.events} == {"test-run"}
+
+
+def test_numbers_are_lossless(database_url, clock):
+    from decimal import Decimal
+
+    ws = build_workspace()
+    values = ws.fake.pages[ws.project_row]["properties"]
+    values["Estimate"]["number"] = Decimal("1234567890.123456789")
+    values["Office"]["place"]["lat"] = Decimal("37.774900000000000123")
+    values["Hologram"]["hologram"] = {"beam": Decimal("0.1000000000000000055511151231257827")}
+    run_snapshot(ws.fake, database_url, clock)
+    [row] = query(database_url, 'SELECT "Estimate"::text, "Office"->>\'lat\', "Hologram"->>\'beam\' FROM rows."Projects"')
+    assert row == ("1234567890.123456789", "37.774900000000000123", "0.1000000000000000055511151231257827")
+
+
+def test_json_codec_round_trip():
+    from decimal import Decimal
+
+    from notion2pg_bulk import json_codec
+
+    text_value = '{"a": [1, 2.50, -0.0, 1e+400, "x\\"y", null, true], "b": {"c": 1234567890.123456789}}'
+    decoded = json_codec.loads(text_value)
+    assert decoded["b"]["c"] == Decimal("1234567890.123456789") and isinstance(decoded["a"][0], int)
+    assert json_codec.loads(json_codec.dumps(decoded)) == decoded

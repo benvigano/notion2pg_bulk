@@ -10,7 +10,7 @@ from sqlalchemy import Connection, Engine, Table, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
-from . import fetch, load
+from . import fetch, json_codec, load
 from .errors import SnapshotIntegrityError
 from .naming import check_column_names, check_workspace_names
 from .notion_api import NotionAPI
@@ -65,7 +65,12 @@ def create_target_engine(database_url: str) -> Engine:
     url = make_url(database_url)
     if url.drivername == "postgresql":
         url = url.set(drivername="postgresql+psycopg")
-    return create_engine(url, poolclass=NullPool, connect_args={"connect_timeout": CONNECT_TIMEOUT_S})
+    return create_engine(
+        url,
+        poolclass=NullPool,
+        connect_args={"connect_timeout": CONNECT_TIMEOUT_S},
+        json_serializer=json_codec.dumps,
+    )
 
 
 def run(engine: Engine, api: NotionAPI, *, row_bodies: bool) -> None:

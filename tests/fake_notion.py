@@ -12,6 +12,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
+from notion2pg_bulk.json_codec import dumps
+
 JSON = Dict[str, Any]
 
 
@@ -152,8 +154,13 @@ def view(view_id: str, database_id: str, data_source_id: Optional[str], view_typ
     }
 
 
+def respond_json(status: int, body: Any) -> httpx.Response:
+    """A JSON response that keeps Decimal values exact."""
+    return httpx.Response(status, content=dumps(body).encode(), headers={"content-type": "application/json"})
+
+
 def error_body(status: int, code: str, message: str = "error") -> httpx.Response:
-    return httpx.Response(status, json={"object": "error", "status": status, "code": code,
+    return respond_json(status, {"object": "error", "status": status, "code": code,
                                         "message": message, "request_id": new_id()})
 
 
@@ -249,7 +256,7 @@ class FakeNotion:
     def _get(self, store: Dict[str, JSON], object_id: str) -> httpx.Response:
         if object_id not in store:
             return error_body(404, "object_not_found", f"Could not find {object_id}")
-        return httpx.Response(200, json=store[object_id])
+        return respond_json(200, store[object_id])
 
     def _page(self, items: List[JSON], cursor: Optional[str], size: Optional[int]) -> Tuple[List[JSON], Optional[str]]:
         start = int(cursor) if cursor else 0
@@ -260,7 +267,7 @@ class FakeNotion:
 
     def _list(self, items: List[JSON], params: Dict[str, Any], extra: Optional[JSON] = None) -> httpx.Response:
         chunk, cursor = self._page(items, params.get("start_cursor"), params.get("page_size"))
-        return httpx.Response(200, json={"object": "list", "results": chunk, "next_cursor": cursor,
+        return respond_json(200, {"object": "list", "results": chunk, "next_cursor": cursor,
                                          "has_more": cursor is not None, **(extra or {})})
 
     def _search(self, body: JSON) -> httpx.Response:
@@ -291,7 +298,7 @@ class FakeNotion:
                          "page_or_data_source": {}}
         if capped:
             payload["request_status"] = {"type": "incomplete", "incomplete_reason": "query_result_limit_reached"}
-        return httpx.Response(200, json=payload)
+        return respond_json(200, payload)
 
     def _property(self, page_id: str, raw_property_id: str, params: Dict[str, Any]) -> httpx.Response:
         key = (page_id, raw_property_id)
@@ -300,7 +307,7 @@ class FakeNotion:
         items = self.property_items[key]
         chunk, cursor = self._page(items, params.get("start_cursor"), params.get("page_size"))
         prop_type = items[0]["type"] if items else "relation"
-        return httpx.Response(200, json={
+        return respond_json(200, {
             "object": "list", "results": chunk, "next_cursor": cursor, "has_more": cursor is not None,
             "type": "property_item",
             "property_item": {"id": key[1], "next_url": None, "type": prop_type, prop_type: {}},

@@ -10,6 +10,7 @@ from typing import Any, Callable, Deque, Dict, Literal, Mapping, Optional, Tuple
 
 import httpx
 
+from . import json_codec
 from .errors import NotionAPIError, RetriesExhaustedError
 from .telemetry import (
     Anomaly,
@@ -115,7 +116,7 @@ class RateLimiter:
 def _api_error(response: httpx.Response) -> NotionAPIError:
     body: Dict[str, Any] = {}
     if response.headers.get("content-type", "").startswith("application/json"):
-        parsed = response.json()
+        parsed = json_codec.loads(response.content)
         if isinstance(parsed, dict):
             body = parsed
     additional = body.get("additional_data") if isinstance(body.get("additional_data"), dict) else {}
@@ -303,7 +304,7 @@ class NotionHTTP:
         except TRANSPORT_FAULTS as exc:
             return _RetryableFault("transport", exc, None)
         if response.is_success:
-            return response.json()
+            return json_codec.loads(response.content)
         error = _api_error(response)
         fault = classify(error)
         if fault is None:
