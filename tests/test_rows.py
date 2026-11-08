@@ -202,3 +202,36 @@ def test_unknown_option_without_schema_change_raises(clock):
     assert fetch.schema_mismatches(obj, source) == ["unknown option ghost of property sel"]
     with pytest.raises(SnapshotIntegrityError):
         fetch.parse_row(api_for(fake, clock), obj, source)
+
+
+@pytest.mark.parametrize("count,refetched", [(24, False), (25, True), (26, True)])
+def test_people_at_the_cap_are_reread_without_has_more(clock, count, refetched):
+    fake = FakeNotion()
+    ds_id, db_id, source = simple_source(fake, {"Who": {"id": "who", "name": "Who", "description": None,
+                                                        "type": "people", "people": {}}})
+    obj = row(ds_id, db_id, Who={"id": "who", "type": "people", "people": [user(u) for u in RELATED[:count]]})
+    fake.property_items[(obj["id"], "who")] = [
+        {"object": "property_item", "id": "who", "type": "people", "people": user(u)} for u in RELATED[:60]
+    ]
+    record = fetch.parse_row(api_for(fake, clock), obj, source)
+    assert record.values["who"] == (RELATED[:60] if refetched else RELATED[:count])
+    assert bool(fake.requests) is refetched
+
+
+@pytest.mark.parametrize("prop_type", ["title", "rich_text"])
+@pytest.mark.parametrize("mentions,refetched", [(24, False), (25, True)])
+def test_text_at_the_mention_cap_is_reread_without_has_more(clock, prop_type, mentions, refetched):
+    fake = FakeNotion()
+    extra = {} if prop_type == "title" else {"Notes": {"id": "nts", "name": "Notes", "description": None,
+                                                        "type": "rich_text", "rich_text": {}}}
+    ds_id, db_id, source = simple_source(fake, extra)
+    prop_id = "title" if prop_type == "title" else "nts"
+    truncated = [page_mention(p) for p in RELATED[:mentions]] + [rich_text(" and plain text")] * 30
+    full = [page_mention(p) for p in RELATED[:40]]
+    obj = row(ds_id, db_id)
+    obj["properties"]["Name" if prop_type == "title" else "Notes"] = {"id": prop_id, "type": prop_type, prop_type: truncated}
+    fake.property_items[(obj["id"], prop_id)] = [
+        {"object": "property_item", "id": prop_id, "type": prop_type, prop_type: m} for m in full
+    ]
+    record = fetch.parse_row(api_for(fake, clock), obj, source)
+    assert record.values[prop_id] == (full if refetched else truncated)

@@ -23,6 +23,7 @@ from .records import (
 )
 
 MAX_BLOCK_DEPTH = 100
+PAGE_RESPONSE_ITEM_CAP = 25
 CREATED_TIME_ASCENDING = [{"timestamp": "created_time", "direction": "ascending"}]
 RESULT_LIMIT_REASON = "query_result_limit_reached"
 MEDIA_BLOCK_TYPES = frozenset({"image", "video", "audio", "file", "pdf"})
@@ -86,17 +87,35 @@ def fetch_child_page(api: NotionAPI, page_id: str) -> Optional[PageRecord]:
 
 # ---------------------------------------------------------------- rows
 
+def may_be_truncated(value: Mapping[str, Any]) -> bool:
+    """Whether a page property value may be missing items.
+
+    ``has_more`` is documented for relations only; for people and for mentions
+    in title/rich_text the docs only state the 25-item cap, so reaching it
+    also counts.
+    """
+    if value.get("has_more"):
+        return True
+    items = value.get(value["type"]) or []
+    if value["type"] == "people":
+        return len(items) >= PAGE_RESPONSE_ITEM_CAP
+    if value["type"] in ("title", "rich_text"):
+        return sum(1 for item in items if item.get("type") == "mention") >= PAGE_RESPONSE_ITEM_CAP
+    return False
+
+
 def complete_value(api: NotionAPI, page_id: str, value: Mapping[str, Any]) -> Mapping[str, Any]:
     """Return a page property value with every item, re-reading it when truncated.
 
     Page responses cap ``relation``, ``people`` and ``title``/``rich_text``
-    mentions at 25 and only set ``has_more`` (no cursor): the full value is
-    read from the property item endpoint, from its first item.
+    mentions at 25 and give no cursor: a value that may be truncated (see
+    :func:`may_be_truncated`) is read from the property item endpoint, from
+    its first item.
 
     :raises SnapshotIntegrityError: ``has_more`` on a non-paginated type, or an
         unexpected property item response.
     """
-    if not value.get("has_more"):
+    if not may_be_truncated(value):
         return value
     prop_type = value["type"]
     if prop_type not in PAGINATED_TYPES:
