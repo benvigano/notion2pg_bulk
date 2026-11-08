@@ -27,8 +27,7 @@ MAX_BLOCK_DEPTH = 100
 PAGE_RESPONSE_ITEM_CAP = 25
 CREATED_TIME_ASCENDING = [{"timestamp": "created_time", "direction": "ascending"}]
 RESULT_LIMIT_REASON = "query_result_limit_reached"
-MEDIA_BLOCK_TYPES = frozenset({"image", "video", "audio", "file", "pdf"})
-HOSTED_EMBED_MARKERS = frozenset({"file", "file_upload"})
+UNCAPTURED_BLOCK_TYPES = frozenset({"image", "video", "audio", "file", "pdf", "embed"})
 UNWALKED_BLOCK_TYPES = frozenset({"child_page", "child_database", "unsupported"})
 SELECT_TYPES = frozenset({"select", "status"})
 
@@ -279,14 +278,13 @@ def linked_database_from_block(block: BlockRecord) -> DatabaseRecord:
 # ---------------------------------------------------------------- bodies
 
 def is_captured(block: Mapping[str, Any]) -> bool:
-    """Whether a block is stored: media blocks and Notion-hosted embeds are not."""
-    block_type = block["type"]
-    if block_type in MEDIA_BLOCK_TYPES:
-        return False
-    if block_type == "embed":
-        payload = block.get("embed") or {}
-        return "file_upload" not in payload and payload.get("type") not in HOSTED_EMBED_MARKERS
-    return True
+    """Whether a block is stored: media and embed blocks are not.
+
+    An embed reads back with only a ``url``, a temporary signed link when it
+    is backed by an uploaded file, so hosted and external embeds cannot be
+    told apart.
+    """
+    return block["type"] not in UNCAPTURED_BLOCK_TYPES
 
 
 def _block_content(block: Mapping[str, Any]) -> Dict[str, Any]:

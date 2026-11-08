@@ -14,7 +14,7 @@ def walk(fake, clock, page_id):
     return fetch.fetch_page_body(api_for(fake, clock), page_id)
 
 
-def test_walk_excludes_child_pages_databases_synced_copies_and_media(clock):
+def test_walk_excludes_child_pages_databases_synced_copies_media_and_embeds(clock):
     fake = FakeNotion()
     page_id = new_id()
     child_page = block("child_page", {"title": "Sub"}, has_children=True)
@@ -23,9 +23,9 @@ def test_walk_excludes_child_pages_databases_synced_copies_and_media(clock):
     copy = block("synced_block", {"synced_from": {"type": "block_id", "block_id": original["id"]}}, has_children=True)
     media = [block(t, {"type": "external", "external": {"url": "https://e.x/a"}, "caption": []})
              for t in ("image", "video", "audio", "file", "pdf")]
-    hosted_embed = block("embed", {"type": "file_upload", "file_upload": {"id": new_id()}, "url": "https://s3/x"})
-    plain_embed = block("embed", {"url": "https://companywebsite.com"})
-    fake.set_children(page_id, [child_page, child_db, original, copy, *media, hosted_embed, plain_embed])
+    hosted_embed = block("embed", {"url": "https://prod-files-secure.s3.us-west-2.amazonaws.com/x.html?X-Amz-Signature=s"})
+    external_embed = block("embed", {"url": "https://companywebsite.com"})
+    fake.set_children(page_id, [child_page, child_db, original, copy, *media, hosted_embed, external_embed])
     fake.set_children(child_page["id"], [paragraph("must not be read")])
     fake.set_children(child_db["id"], [paragraph("must not be read")])
     fake.set_children(original["id"], [paragraph("synced content")])
@@ -33,7 +33,7 @@ def test_walk_excludes_child_pages_databases_synced_copies_and_media(clock):
 
     blocks = walk(fake, clock, page_id)
     by_id = {b.block_id: b for b in blocks}
-    assert set(by_id) == {child_page["id"], child_db["id"], original["id"], copy["id"], plain_embed["id"],
+    assert set(by_id) == {child_page["id"], child_db["id"], original["id"], copy["id"],
                           next(b.block_id for b in blocks if b.parent_block_id == original["id"])}
     assert by_id[copy["id"]].content == {"synced_from": {"type": "block_id", "block_id": original["id"]}}
     walked = {r.url.path for r in fake.requests}

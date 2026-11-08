@@ -9,6 +9,7 @@ _Python package to snapshot an entire Notion workspace to a PostgreSQL database.
 | Item | Reason |
 |---|---|
 | Media: `image`, `video`, `audio`, `file`, `pdf` blocks; `files` properties; page and database covers; file icons | Notion-hosted files: not retrievable; the API returns only URLs that expire after 1 h ([file object](https://developers.notion.com/reference/file-object)). External links: choice; keeping them while dropping hosted files means handling the two variants separately for each media type. |
+| `embed` blocks | An embed is read back with only `url`, a temporary signed link when it is backed by an uploaded file; `file_upload` is a create/update parameter only ([embed](https://developers.notion.com/reference/block#embed)). Notion-hosted and external embeds can't be told apart, so neither is kept. |
 | Database templates | Choice. Friction: +1 paginated request per data source ([list templates](https://developers.notion.com/reference/list-data-source-templates)) plus a body fetch per template. |
 | Comments | Choice. Friction: ≥1 request per page and per block; only unresolved comments are returned ([list comments](https://developers.notion.com/reference/list-comments)). |
 | Automations, AI autofill | Not exposed by the [API](https://developers.notion.com/reference/intro). |
@@ -40,7 +41,7 @@ _Python package to snapshot an entire Notion workspace to a PostgreSQL database.
     - property values: every type not listed in the "Not captured" section, each losslessly in its own column, including status, unique ID, place, wiki verification, date ranges and time zones, and relations with more than 25 links
     - body: blocks (optional, on by default)
 - **Blocks** (page and row content, any nesting depth)
-  - all JSON-only types: paragraph, headings 1–4 (including toggle headings), bulleted/numbered list, to_do, toggle, quote, callout, divider, breadcrumb, table_of_contents, code (including mermaid), bookmark, embed, link_preview, equation, table/table_row, column_list/column, tab, child_page, child_database, link_to_page
+  - all JSON-only types: paragraph, headings 1–4 (including toggle headings), bulleted/numbered list, to_do, toggle, quote, callout, divider, breadcrumb, table_of_contents, code (including mermaid), bookmark, link_preview, equation, table/table_row, column_list/column, tab, child_page, child_database, link_to_page
   - block colors
   - synced blocks: the original is stored as a normal block with its children; copies are stored as a pointer (`synced_from.block_id`), with no duplicated content
 - **Rich text** (titles, text properties, blocks): formatting, colors, links, mentions (including link mentions), inline equations
