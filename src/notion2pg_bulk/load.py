@@ -22,9 +22,16 @@ BATCH_SIZE = 500
 T = TypeVar("T")
 
 
-def _batches(items: Sequence[T]) -> Iterator[Sequence[T]]:
-    for start in range(0, len(items), BATCH_SIZE):
-        yield items[start : start + BATCH_SIZE]
+MAX_STATEMENT_PARAMETERS = 65_535
+
+
+def _batches(items: Sequence[T], parameters_per_item: int) -> Iterator[Sequence[T]]:
+    # A multi-row INSERT binds one parameter per row and column, and the PostgreSQL
+    # wire protocol caps a statement at 65,535 parameters (a 16-bit count), so wide
+    # row tables need smaller batches than BATCH_SIZE.
+    size = max(1, min(BATCH_SIZE, MAX_STATEMENT_PARAMETERS // max(1, parameters_per_item)))
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 def _upsert(conn: Connection, table: Table, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -32,7 +39,7 @@ def _upsert(conn: Connection, table: Table, rows: Sequence[Mapping[str, Any]]) -
     if not rows:
         return
     keys = [column.name for column in table.primary_key.columns]
-    for batch in _batches(rows):
+    for batch in _batches(rows, len(table.columns)):
         statement = insert(table).values(list(batch))
         updates = {column.name: statement.excluded[column.name] for column in table.columns if column.name not in keys}
         if updates:
