@@ -57,14 +57,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     package_logger = logging.getLogger(LOGGER_NAME)
     package_logger.addHandler(handler)
     package_logger.setLevel(logging.INFO)
-
-    snapshot(
-        notion_token,
-        database_url,
-        plan=args.plan,
-        row_bodies=args.row_bodies,
-        propagation_id=args.propagation_id,
-    )
+    try:
+        snapshot(
+            notion_token,
+            database_url,
+            plan=args.plan,
+            row_bodies=args.row_bodies,
+            propagation_id=args.propagation_id,
+        )
+    finally:
+        package_logger.removeHandler(handler)
     return 0
 
 

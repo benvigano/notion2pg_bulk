@@ -12,12 +12,14 @@ from .records import (
     DatabaseRecord,
     DataSourceRecord,
     PageRecord,
+    Parent,
     RowRecord,
     ViewRecord,
     parse_data_source,
     parse_database,
     parse_page,
     parse_view,
+    sanitize_icon,
 )
 
 MAX_BLOCK_DEPTH = 100
@@ -44,9 +46,13 @@ def fetch_data_source(api: NotionAPI, data_source_id: str) -> DataSourceRecord:
     return parse_data_source(api.retrieve_data_source(data_source_id))
 
 
-def fetch_database(api: NotionAPI, database_id: str) -> DatabaseRecord:
-    """Retrieve one original database."""
-    return parse_database(api.retrieve_database(database_id))
+def fetch_database(api: NotionAPI, database_id: str) -> Tuple[DatabaseRecord, List[str]]:
+    """Retrieve one original database.
+
+    :returns: The database and the IDs of the data sources it holds.
+    """
+    obj = api.retrieve_database(database_id)
+    return parse_database(obj), [entry["id"] for entry in obj.get("data_sources") or []]
 
 
 def discover_standalone_pages(api: NotionAPI) -> List[PageRecord]:
@@ -58,10 +64,24 @@ def discover_standalone_pages(api: NotionAPI) -> List[PageRecord]:
     """
     found: Dict[str, PageRecord] = {}
     for result in api.search("page"):
-        if result["parent"]["type"] == "data_source_id":
+        if result["parent"]["type"] == "data_source_id" or not is_live(result):
             continue
         found.setdefault(result["id"], parse_page(result, is_row=False))
     return list(found.values())
+
+
+def is_live(obj: Mapping[str, Any]) -> bool:
+    """Whether a page is in scope: neither trashed nor archived."""
+    return not obj.get("in_trash") and not obj.get("is_archived")
+
+
+def fetch_child_page(api: NotionAPI, page_id: str) -> Optional[PageRecord]:
+    """Retrieve a page found as a ``child_page`` block.
+
+    :returns: The page, or ``None`` when it is trashed or archived.
+    """
+    obj = api.retrieve_page(page_id)
+    return parse_page(obj, is_row=False) if is_live(obj) else None
 
 
 # ---------------------------------------------------------------- rows
@@ -194,13 +214,44 @@ def query_rows(api: NotionAPI, data_source_id: str) -> Iterator[List[Mapping[str
 
 # ---------------------------------------------------------------- views
 
-def fetch_views(api: NotionAPI, data_sources: Sequence[DataSourceRecord]) -> List[ViewRecord]:
-    """:returns: Every view listed for the given data sources, retrieved once each."""
+def fetch_views(api: NotionAPI, data_source_ids: Iterable[str], database_ids: Iterable[str]) -> List[ViewRecord]:
+    """Retrieve every view once.
+
+    Listing by data source includes linked views elsewhere in the workspace;
+    listing by (original) database includes dashboards, which have no data source.
+
+    :param data_source_ids: All data sources.
+    :param database_ids: All original databases.
+    """
     view_ids: Dict[str, None] = {}
-    for data_source in data_sources:
-        for view_id in api.list_views(data_source_id=data_source.data_source_id):
+    for data_source_id in data_source_ids:
+        for view_id in api.list_views(data_source_id=data_source_id):
+            view_ids.setdefault(view_id, None)
+    for database_id in database_ids:
+        for view_id in api.list_views(database_id=database_id):
             view_ids.setdefault(view_id, None)
     return [parse_view(api.retrieve_view(view_id)) for view_id in view_ids]
+
+
+def linked_databases_from_views(views: Iterable[ViewRecord], original_ids: Iterable[str]) -> List[DatabaseRecord]:
+    """:returns: Linked database containers seen as view parents (ID only)."""
+    originals = set(original_ids)
+    linked: Dict[str, DatabaseRecord] = {}
+    for record in views:
+        if record.database_id not in originals:
+            linked.setdefault(record.database_id, DatabaseRecord(database_id=record.database_id, is_linked=True))
+    return list(linked.values())
+
+
+def linked_database_from_block(block: BlockRecord) -> DatabaseRecord:
+    """A linked database container from its ``child_database`` block: ID, title and location."""
+    parent = Parent("block_id", block.parent_block_id) if block.parent_block_id else Parent("page_id", block.page_id)
+    return DatabaseRecord(
+        database_id=block.block_id,
+        is_linked=True,
+        block_title=(block.content or {}).get("title"),
+        parent=parent,
+    )
 
 
 # ---------------------------------------------------------------- bodies
@@ -214,6 +265,13 @@ def is_captured(block: Mapping[str, Any]) -> bool:
         payload = block.get("embed") or {}
         return "file_upload" not in payload and payload.get("type") not in HOSTED_EMBED_MARKERS
     return True
+
+
+def _block_content(block: Mapping[str, Any]) -> Dict[str, Any]:
+    content = dict(block.get(block["type"]) or {})
+    if "icon" in content:
+        content["icon"] = sanitize_icon(content["icon"])
+    return content
 
 
 def walks_into(block: Mapping[str, Any]) -> bool:
@@ -249,7 +307,7 @@ def fetch_page_body(api: NotionAPI, page_id: str) -> List[BlockRecord]:
                     parent_block_id=parent_block_id,
                     position=position,
                     type=block_type,
-                    content=block.get(block_type) or {},
+                    content=_block_content(block),
                 )
             )
             if walks_into(block):

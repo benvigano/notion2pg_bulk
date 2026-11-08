@@ -194,7 +194,7 @@ def test_loading_same_records_twice_is_idempotent(database_url, clock):
         with engine.begin() as conn:
             load.create_shared_schema(conn)
             sources = [fetch.fetch_data_source(api, ds) for ds in (ws.projects_ds, ws.tasks_ds)]
-            load.load_databases(conn, [fetch.fetch_database(api, db) for db in (ws.projects_db, ws.tasks_db)])
+            load.load_databases(conn, [fetch.fetch_database(api, db)[0] for db in (ws.projects_db, ws.tasks_db)])
             for source in sources:
                 table = load.load_data_source(conn, source)
                 for objects in fetch.query_rows(api, source.data_source_id):
@@ -202,7 +202,7 @@ def test_loading_same_records_twice_is_idempotent(database_url, clock):
             load.load_pages(conn, fetch.discover_standalone_pages(api))
             for page_id in (ws.standalone_page, ws.project_row):
                 load.load_page_body(conn, page_id, fetch.fetch_page_body(api, page_id))
-            load.load_views(conn, fetch.fetch_views(api, sources))
+            load.load_views(conn, fetch.fetch_views(api, [ws.projects_ds, ws.tasks_ds], [ws.projects_db, ws.tasks_db]))
     engine.dispose()
     assert dump_database(database_url) == before
 
@@ -222,3 +222,30 @@ def test_pages_parented_by_database_id_are_kept(database_url, clock):
     assert (found[0], found[1], found[2][0]["plain_text"]) == ("database_id", ws.projects_db, "Legacy")
     assert query(database_url, "SELECT count(*) FROM notion.blocks WHERE page_id = :p", p=legacy)[0][0] == 1
     assert query(database_url, "SELECT count(*) FROM notion.pages WHERE page_id = :p", p=template)[0][0] == 0
+
+
+def test_telemetry_carries_locus_through_the_snapshot(database_url, clock, telemetry_events):
+    import httpx
+
+    ws = build_workspace()
+    failed = {"query": False, "view": False}
+
+    def flaky(request):
+        if request.url.path.endswith("/query") and not failed["query"]:
+            failed["query"] = True
+            return httpx.Response(503, json={"object": "error", "status": 503, "code": "service_unavailable",
+                                             "message": "busy", "request_id": "r1"})
+        if request.url.path.startswith("/v1/views/") and not failed["view"]:
+            failed["view"] = True
+            return httpx.Response(429, headers={"retry-after": "2"},
+                                  json={"object": "error", "status": 429, "code": "rate_limited", "message": "slow",
+                                        "request_id": "r2", "additional_data": {"retry_after": "2"}})
+        return None
+
+    ws.fake.faults.append(flaky)
+    run_snapshot(ws.fake, database_url, clock)
+    retries = [e for e in telemetry_events.events if e["event"] == "retry_scheduled"]
+    assert [(e["locus"]["phase"], e["fault"]) for e in retries] == [("rows", "server_error"), ("views", "rate_limited")]
+    assert retries[0]["locus"]["entity_type"] == "data_source"
+    assert retries[0]["locus"]["endpoint"] == "/v1/data_sources/{data_source_id}/query"
+    assert {e["propagation_id"] for e in telemetry_events.events} == {"test-run"}
