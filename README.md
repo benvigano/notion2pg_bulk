@@ -17,7 +17,9 @@ uv add notion2pg-bulk
 ### Requirements
 - **PostgreSQL database connection URL**
 - **Notion API token** with read content access to all content (no user capabilities and no comment capabilities). Notion doesn't allow Connections' content access to apply the whole workspace directly. This is achieved by ticking **all _Top-level pages_** in the Content access section in the desktop or web UI (Developer tools -> Connections -> MyConnection -> Content access -> Edit access). **Important**: each new top-level page that is subsequently added to the workspace **must be also manually granted access to Connection**, as new pages default to `unticked`.
-    > A workaround to ensure that the Connection will remain full-workspace in the future without needing to manually grant it access to all new top-level pages, is to place all content in a single static top-level page (ex: 'Workspace') which is granted once. This way all pages in the workspace will inherit its accessibility by the Connection regardless of structure changes.
+- **Optional but recommended: all content under a single top-level page** (e.g. `Workspace`), shared with the connection once. This:
+  1. makes the workspace one connected tree, so [discovery](#discovery) reaches all content even where search misses it (see [Coverage limits](#coverage-limits));
+  2. keeps the connection's access full-workspace: pages created anywhere under it inherit its access, so new top-level pages never need to be shared by hand.
 
 ### Workspace requirements
 Row tables and columns are named verbatim, so the workspace must satisfy:
@@ -113,21 +115,16 @@ A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, w
   - synced blocks: the original is stored as a normal block with its children; copies are stored as a pointer (`synced_from.block_id`), with no duplicated content
 - **Rich text** (titles, text properties, blocks): formatting, colors, links, mentions (including link mentions), inline equations
 
-## Discovery
-Search is only the starting point. From there, discovery follows documented paths, and repeats until nothing new is found:
-- **up**: the parent of every captured page, block, database and data source, up to the workspace;
-- **down**: page bodies, `child_page` blocks, and the views of `child_database` blocks (listed by `database_id`);
-- **sideways**: data sources named by relation settings, views and dashboard widgets; pages and databases named by `link_to_page` blocks and mentions; the original block of each synced-block copy (`synced_from.block_id`), followed up to its page; child data sources (wikis) returned by data source queries.
-
-Every page found gets its body walked; every data source found gets its table, rows and views.
-
 ## Coverage limits
-Even with full workspace access and every requirement above met, a snapshot may miss:
-- **Content that no documented path connects to captured content**: search can miss items, and nothing else leads to them (this includes an original database with no views reached only by ID, e.g. through a mention: `GET /databases/{id}` isn't used on databases reached by ID, so it is recorded as linked). Keeping all content under a single top-level page makes the workspace one connected tree.
-- **Pages whose parent is `database_id`**: search is their only path.
-- **Items reachable only through row bodies**, when row bodies are skipped.
-- **A dashboard without widgets, inside a linked database the walk never reaches.**
-- **Edits made while the snapshot runs.** Search also lags behind recent changes.
+Search is the only endpoint that lists pages and data sources without knowing their IDs, and the Notion docs say it can't serve as an inventory: "Search can't provide a complete inventory of the content a connection can access", and its index "takes time to reflect changes" ([search limitations](https://developers.notion.com/reference/search-optimizations-and-limitations)). [Discovery](#discovery) follows every documented path from what search finds, but an item that search misses can still be missed when:
+- **no documented path connects it to captured content**, including an original database without views that is reached only by ID (e.g. through a mention): `GET /databases/{id}` isn't used on databases reached by ID, so it is recorded as linked;
+- **it is a page whose parent is `database_id`**: search is its only path. Such pages are most likely leftovers of Notion's move to data sources, and should be rare: the current parent rules don't list databases among page parents ([parent object](https://developers.notion.com/reference/parent-object)), while before `2025-09-03` rows were parented by `database_id`, as the [page object](https://developers.notion.com/reference/page) example still shows;
+- **only row bodies lead to it, and the snapshot runs with `--no-row-bodies`** (`row_bodies=False`): discovery doesn't read row bodies then, so it can't reach anything inside them;
+- **it is a dashboard without widgets**, in a linked database that the walk never reaches.
+
+Keeping all content under a [single top-level page](#requirements) practically rules these out: discovery climbs from anything it finds to that page and walks everything under it. Only pages parented by `database_id` and, with `--no-row-bodies`, content inside rows stay out of its reach.
+
+Independently of search, edits made while the snapshot runs may be partly reflected (see [Consistency](#consistency)).
 
 ## PostgreSQL mapping
 
@@ -194,7 +191,7 @@ Empty values are `NULL` (the API returns `null` or `[]` for them); an unchecked 
 - Notion has no snapshot API, so **a snapshot is not point-in-time consistent**: entities are read one after another over minutes (an hour or more with row bodies), and edits made meanwhile may be partly reflected. If a row shows a property, type or option that the schema read earlier lacks, the data source is read again: new properties get a column (under the name first seen), while a property that changed type, or an option still unknown after the re-read, aborts the snapshot with `SnapshotIntegrityError`.
 
 ## Failures
-Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target as it was. Nothing is skipped and continued, except where a discovery path ends ([where discovery stops](#where-discovery-stops)).
+Any fault that is not retried, or that persists after its retries, raises an exception from one hierarchy, rolls the transaction back and leaves the target as it was. Nothing is skipped and continued, except where a [discovery](#discovery) path ends: an object not found on a lookup made only to extend discovery, or returned trashed or archived.
 
 | Exception | Raised when |
 |---|---|
@@ -258,8 +255,11 @@ Repeat steps 3–4 before each run. `NOTION2PG_LIVE_PLAN` (default `free`) sets 
 **Last tested Notion-Version**: `2026-03-11`
 
 ## Internal logic
-_Not needed to use the package._
 
-### Where discovery stops
-- A path ends at an object that is not found (404 on a lookup made only to extend discovery), or that is returned trashed or archived.
-- A database reached by ID is original only if it contains a discovered data source; otherwise it is recorded as linked.
+### Discovery
+Search is only the starting point. From there, discovery follows documented paths, and repeats until nothing new is found:
+- **up**: the parent of every captured page, block, database and data source, up to the workspace;
+- **down**: page bodies, `child_page` blocks, and the views of `child_database` blocks (listed by `database_id`);
+- **sideways**: data sources named by relation settings, views and dashboard widgets; pages and databases named by `link_to_page` blocks and mentions; the original block of each synced-block copy (`synced_from.block_id`), followed up to its page; child data sources (wikis) returned by data source queries.
+
+Every page found gets its body walked; every data source found gets its table, rows and views.
