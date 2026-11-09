@@ -118,11 +118,11 @@ A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, w
 ## Coverage limits
 Search is the only endpoint that lists pages and data sources without knowing their IDs, and the Notion docs say it can't serve as an inventory: "Search can't provide a complete inventory of the content a connection can access", and its index "takes time to reflect changes" ([search limitations](https://developers.notion.com/reference/search-optimizations-and-limitations)). [Discovery](#discovery) follows every documented path from what search finds, but an item that search misses can still be missed when:
 - **no documented path connects it to captured content**, including an original database without views that is reached only by ID (e.g. through a mention): `GET /databases/{id}` isn't used on databases reached by ID, so it is recorded as linked;
-- **it is a page whose parent is `database_id`**: search is its only path;
-- **only row bodies lead to it**, and row bodies are skipped;
+- **it is a page whose parent is `database_id`**: search is its only path. Such pages are most likely leftovers of Notion's move to data sources, and should be rare: the current parent rules don't list databases among page parents ([parent object](https://developers.notion.com/reference/parent-object)), while before `2025-09-03` rows were parented by `database_id`, as the [page object](https://developers.notion.com/reference/page) example still shows;
+- **only row bodies lead to it, and the snapshot runs with `--no-row-bodies`** (`row_bodies=False`): discovery doesn't read row bodies then, so it can't reach anything inside them;
 - **it is a dashboard without widgets**, in a linked database that the walk never reaches.
 
-Keeping all content under a [single top-level page](#requirements) practically rules these out: discovery climbs from anything it finds to that page and walks everything under it. Only pages parented by `database_id`, and content behind skipped row bodies, stay out of its reach.
+Keeping all content under a [single top-level page](#requirements) practically rules these out: discovery climbs from anything it finds to that page and walks everything under it. Only pages parented by `database_id` and, with `--no-row-bodies`, content inside rows stay out of its reach.
 
 Independently of search, edits made while the snapshot runs may be partly reflected (see [Consistency](#consistency)).
 
