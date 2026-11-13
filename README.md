@@ -27,6 +27,8 @@ Row tables and columns are named verbatim, so the workspace must satisfy:
 2. Every data source title and every name of a property that maps to a column is at most 63 bytes of UTF-8 (PostgreSQL's identifier limit).
 3. No property that maps to a column is named `tableoid`, `xmin`, `xmax`, `cmin`, `cmax`, `ctid` or `_page_id`.
 
+Notion guarantees only that property names are unique within a data source (they are the keys of the API's `properties` object) and that IDs are unique and stable; titles of data sources can repeat and can be empty.
+
 A violation aborts the snapshot with `SnapshotIntegrityError` before anything is written.
 
 ### Target database
@@ -79,6 +81,7 @@ A bare `postgresql://` URL uses psycopg 3. The package creates its own engine, w
 |---|---|
 | Media: `image`, `video`, `audio`, `file`, `pdf` blocks; `files` properties; page and database covers; file icons | Notion-hosted files: not retrievable; the API returns only URLs that expire after 1 h ([file object](https://developers.notion.com/reference/file-object)). External links: choice; keeping them while dropping hosted files means handling the two variants separately for each media type. |
 | `embed` blocks | An embed is read back with only `url`, a temporary signed link when it is backed by an uploaded file; `file_upload` is a create/update parameter only ([embed](https://developers.notion.com/reference/block#embed)). Notion-hosted and external embeds can't be told apart, so neither is kept. |
+| Favourites | Not exposed by the [API](https://developers.notion.com/reference/intro): no endpoint returns a user's favourites. |
 | Database templates | Choice. Friction: +1 paginated request per data source ([list templates](https://developers.notion.com/reference/list-data-source-templates)) plus a body fetch per template. |
 | Comments | Choice. Friction: ≥1 request per page and per block; only unresolved comments are returned ([list comments](https://developers.notion.com/reference/list-comments)). |
 | Automations, AI autofill | Not exposed by the [API](https://developers.notion.com/reference/intro). |
@@ -128,63 +131,162 @@ Independently of search, edits made while the snapshot runs may be partly reflec
 
 ## PostgreSQL mapping
 
-- **One table per data source**, holding its rows: primary key = row page ID, then exactly one column per property. Every column is lossless: with the shared tables it references (e.g. options), it reproduces everything the API returns for that value. Exceptions: the property types listed in the "Not captured" section have no column.
-- **Shared tables, keyed by Notion IDs**:
-  - catalog: data source → table name, property → column name. Names are verbatim: the table is named exactly after the data source title and each column exactly after its property name, as quoted identifiers (no sanitizing, lowercasing or truncating). The row ID column is `_page_id`.
-  - databases (original and linked), data sources, properties (full configuration, including formula and rollup definitions), select/multi-select/status options, views
-  - pages: every captured page, rows included (parent, title for standalone pages, icon, `is_locked`, `public_url`)
-  - blocks: every block of every captured page body (`page_id`, parent block, position, type, content)
-- References between entities (relations, parents, options, views → data sources) are stored as Notion IDs.
-- **Two schemas**: `notion` holds the shared tables, `rows` holds the row tables, so row-table names never collide with them.
-- **What Notion guarantees**: property names are unique within a data source (they are the keys of the API's `properties` object); IDs are unique and stable. Titles of data sources and databases are not guaranteed unique and can be empty (see [Workspace requirements](#workspace-requirements)).
-- **The table name is the data source title** (`data_source.title`), not the database title. A data source can keep the name it got when it was created, so it may differ from the database's current title. Check it in Notion under **Manage data sources**.
+The snapshot has two schemas: `notion`, with the shared tables below, and `rows`, with one table per data source.
 
-### Tables
+**Identifiers.** Page, block, database, data source, view and user IDs are `UUID`. Property IDs and option IDs are `TEXT`, exactly as the API returns them: property IDs are short strings or UUIDs, URL-encoded (e.g. `M%3BBw`), the title property's ID is always `title`, and option IDs are UUIDs or short strings. Every reference between entities is one of these IDs; the only foreign key is `notion.options` → `notion.properties`.
 
-| Table | Key | Contents |
+**Empty values** are `NULL` (the API returns `null` or `[]` for them); an unchecked checkbox is `false`.
+
+**Rich text** (`JSONB`) is the API's array of [rich text objects](https://developers.notion.com/reference/rich-text), in order. Each has `type` (`text`, `mention` or `equation`), the matching object (`text.content`, `text.link`; `mention.type` with the target in `mention.<type>`, e.g. `mention.page.id`; `equation.expression`), `annotations` (`bold`, `italic`, `strikethrough`, `underline`, `code`, `color`), `plain_text` and `href`. The plain text of a value is the concatenation of its items' `plain_text`.
+
+**Parents** are a pair: `parent_type` and `parent_id`. `parent_type` is `workspace` (then `parent_id` is `NULL`), `page_id`, `block_id`, `database_id`, `data_source_id` or `agent_id`, and `parent_id` is the ID of that entity.
+
+**Icons** (`JSONB`) are the icon object as returned: `{"type": "emoji", "emoji": …}`, `{"type": "icon", "icon": {"name", "color"}}`, `{"type": "custom_emoji", "custom_emoji": {"id", "name", "url"}}` or `{"type": "external", "external": {"url"}}`; `NULL` when there is none or it is a Notion-hosted file.
+
+### Row tables
+Each data source has the table `rows."<title>"`, where `<title>` is the plain text of the data source's title, used verbatim as a quoted identifier (no sanitizing, lowercasing or truncating). This is the data source title, not the database title; the two can differ (check it in Notion under **Manage data sources**). `notion.catalog_tables` maps each data source to its table name.
+
+The table's primary key is `_page_id`, the row page's ID (the row's page is in `notion.pages`). Every other column holds one property, named after it as first seen by the snapshot; `notion.catalog_columns` maps each property ID to its column name. Its type and content follow the property type:
+
+| Notion property | PostgreSQL type | Content |
 |---|---|---|
-| `notion.catalog_tables` | `data_source_id` | `table_name` in `rows` |
-| `notion.catalog_columns` | `data_source_id`, `property_id` | `column_name` in that table |
-| `notion.databases` | `database_id` | `is_linked`, `title` (rich text), `block_title` (title of the `child_database` block), `description`, `icon`, `parent_type`, `parent_id`, `is_inline`, `is_locked`, `show_data_source_title` |
-| `notion.data_sources` | `data_source_id` | `database_id`, `parent_type`, `parent_id`, `title`, `description`, `icon`, `sync_metadata` |
-| `notion.properties` | `data_source_id`, `property_id` | `name`, `type`, `description`, `config` (the property object as returned) |
-| `notion.options` | `data_source_id`, `property_id`, `option_id` | `position`, `name`, `color`, `description`, `status_group_id`, `status_group_name` |
-| `notion.views` | `view_id` | `database_id`, `data_source_id` (null for dashboards), `dashboard_view_id` (widgets), `name`, `type`, `content` (filter, sorts, quick filters, configuration, …) |
-| `notion.pages` | `page_id` | `parent_type`, `parent_id`, `title` (standalone pages), `icon`, `is_locked`, `public_url` |
-| `notion.blocks` | `block_id` | `page_id`, `parent_block_id` (null at top level), `position` (index among the API's children), `type`, `content` (the type's payload) |
-| `rows."<data source title>"` | `_page_id` | one column per property |
-
-### Property type mapping
-
-| Notion Property | PostgreSQL Type | Notes |
-|----------------|-----------------|-------|
-| Title | `JSONB` | Rich-text array as returned (formatting, colors, links, mentions, equations); complete beyond 25 mentions |
-| Rich text | `JSONB` | As title |
-| Number | `NUMERIC` | Number format in `notion.properties.config` |
-| Select | `TEXT` | Option ID; name, color and description in `notion.options` |
-| Status | `TEXT` | Option ID; group in `notion.options`, default option in `config` |
-| Multi-select | `TEXT[]` | Option IDs |
-| Date | `JSONB` | `{start, end, time_zone}` as returned: date-only values stay `YYYY-MM-DD`, datetimes keep their offset, so the instant is exact. A named time zone may come back only as that offset, with `time_zone: null`. Query with expressions, e.g. `("Due"->>'start')` |
+| Title | `JSONB` | Rich text, complete beyond 25 mentions |
+| Rich text | `JSONB` | Rich text, complete beyond 25 mentions |
+| Number | `NUMERIC` | The exact number; the display format is in the property's `config` |
+| Select | `TEXT` | Option ID, in `notion.options` |
+| Status | `TEXT` | Option ID, in `notion.options` |
+| Multi-select | `TEXT[]` | Option IDs, in `notion.options` |
+| Date | `JSONB` | `{"start", "end", "time_zone"}` as returned. `start` and `end` (`NULL` unless a range) are `YYYY-MM-DD` for a date, or a datetime with UTC offset (e.g. `2026-09-15T09:30:00.000+02:00`). A named time zone may come back only as that offset, with `time_zone` `NULL` |
 | Checkbox | `BOOLEAN` | |
-| URL | `TEXT` | |
-| Email | `TEXT` | |
-| Phone | `TEXT` | |
-| Relation | `UUID[]` | Related page IDs, complete beyond 25; target and `limit` in `config` |
+| URL, Email, Phone | `TEXT` | |
+| Relation | `UUID[]` | Page IDs of the related rows, complete beyond 25: the `_page_id` values of the target data source (named in the property's `config`) |
 | People | `UUID[]` | User IDs, complete beyond 25 |
-| Unique ID | `BIGINT` | Number; the prefix is in `config` |
-| Place | `JSONB` | `{lat, lon, name, address, aws_place_id, google_place_id}` |
-| Verification | `JSONB` | `{state, date, verified_by}` |
-| Created time | `TIMESTAMPTZ` | |
-| Created by | `UUID` | User ID |
-| Last edited time | `TIMESTAMPTZ` | |
-| Last edited by | `UUID` | User ID |
-| Formula | - | Definition in `config`; values not captured |
-| Rollup | - | Definition in `config`; values not captured |
-| Button | - | Not returned by the API |
-| Files | - | Not captured |
-| Any other type | `JSONB` | Value as returned |
+| Unique ID | `BIGINT` | The number; the prefix is in the property's `config` |
+| Place | `JSONB` | `{"lat", "lon", "name", "address", "aws_place_id", "google_place_id"}` |
+| Verification | `JSONB` | `{"state", "date", "verified_by"}`: `state` is `verified`, `unverified` or `expired`; `date` is a date value; `verified_by` a user `{"object", "id"}` |
+| Created time, Last edited time | `TIMESTAMPTZ` | |
+| Created by, Last edited by | `UUID` | User ID |
+| Any other type | `JSONB` | The value as returned |
 
-Empty values are `NULL` (the API returns `null` or `[]` for them); an unchecked checkbox is `false`.
+Formula, rollup, button and files properties have no column (see [Not captured](#not-captured)); formula and rollup definitions are in `notion.properties`.
+
+### Shared tables
+
+**`notion.catalog_tables`**: one row per data source.
+
+| Column | Type | Content |
+|---|---|---|
+| `data_source_id` | `UUID`, key | |
+| `table_name` | `TEXT`, unique | Its table in `rows` |
+
+**`notion.catalog_columns`**: one row per property that has a column.
+
+| Column | Type | Content |
+|---|---|---|
+| `data_source_id`, `property_id` | `UUID`, `TEXT`, key | |
+| `column_name` | `TEXT` | Its column in the data source's table |
+
+**`notion.databases`**: one row per database, original (owns data sources) or linked (shows a data source owned by another database).
+
+| Column | Type | Content |
+|---|---|---|
+| `database_id` | `UUID`, key | Also the ID of the `child_database` block showing it in its parent page |
+| `is_linked` | `BOOLEAN` | |
+| `title`, `description` | `JSONB` | Rich text; `NULL` when empty, and for linked databases |
+| `block_title` | `TEXT` | Title shown on its `child_database` block; set for linked databases found in a page body |
+| `icon` | `JSONB` | `NULL` for linked databases |
+| `parent_type`, `parent_id` | `TEXT`, `UUID` | Where it sits: `workspace`, `page_id` or `block_id`. For a linked database, the page or block holding its `child_database` block; `NULL` if it was only seen as the parent of a view |
+| `is_inline` | `BOOLEAN` | Inline (`true`) or full page (`false`); `NULL` for linked databases |
+| `is_locked`, `show_data_source_title` | `BOOLEAN` | `NULL` for linked databases |
+
+**`notion.data_sources`**: one row per data source.
+
+| Column | Type | Content |
+|---|---|---|
+| `data_source_id` | `UUID`, key | |
+| `database_id` | `UUID` | The original database that owns it |
+| `parent_type`, `parent_id` | `TEXT`, `UUID` | `database_id` (the owning database) or, for a synced data source, `data_source_id` |
+| `title` | `JSONB` | Rich text (its plain text is the table name) |
+| `description` | `JSONB` | Rich text; `NULL` when empty |
+| `icon` | `JSONB` | |
+| `sync_metadata` | `JSONB` | As returned for data sources synced from external tools (provider, sync ID, health); `NULL` otherwise |
+
+**`notion.properties`**: one row per property of every data source (including formula, rollup, button and files properties).
+
+| Column | Type | Content |
+|---|---|---|
+| `data_source_id`, `property_id` | `UUID`, `TEXT`, key | |
+| `name` | `TEXT` | Current name |
+| `type` | `TEXT` | API type: `title`, `rich_text`, `number`, `select`, `status`, `multi_select`, `date`, `checkbox`, `url`, `email`, `phone_number`, `relation`, `people`, `unique_id`, `place`, `verification`, `created_time`, `created_by`, `last_edited_time`, `last_edited_by`, `formula`, `rollup`, `button`, `files`, or any newer type |
+| `description` | `TEXT` | |
+| `config` | `JSONB` | The [property object](https://developers.notion.com/reference/property-object) as returned: `id`, `name`, `description`, `type`, and the type's settings under the key named by `type` |
+
+Settings in `config`, by type:
+- `relation`: `relation.data_source_id` and `relation.database_id` (the target), `relation.limit`, `relation.type` (`single_property` or `dual_property`), and for two-way relations `relation.dual_property.synced_property_id` and `.synced_property_name` (the property on the other side);
+- `formula`: `formula.expression`, in `prop("Name")` syntax (expressions that can't be shown that way contain `{{notion:block_property:…}}` references);
+- `rollup`: `rollup.relation_property_id`, `.relation_property_name`, `.rollup_property_id`, `.rollup_property_name`, `.function`;
+- `number`: `number.format`;
+- `unique_id`: `unique_id.prefix`;
+- `status`: `status.default_option` (option name) and `status.groups` (`id`, `name`, `color`, `option_ids`);
+- `select`, `multi_select`, `status`: `<type>.options` (as also listed in `notion.options`).
+
+**`notion.options`**: one row per option of every select, multi-select and status property.
+
+| Column | Type | Content |
+|---|---|---|
+| `data_source_id`, `property_id`, `option_id` | `UUID`, `TEXT`, `TEXT`, key | |
+| `position` | `INTEGER` | Order in the property's schema, from 0 |
+| `name`, `color`, `description` | `TEXT` | |
+| `status_group_id`, `status_group_name` | `TEXT` | The status group holding the option; `NULL` for select and multi-select |
+
+**`notion.views`**: one row per view: the tabs of every database, and dashboard widgets.
+
+| Column | Type | Content |
+|---|---|---|
+| `view_id` | `UUID`, key | |
+| `database_id` | `UUID` | The database (original or linked) whose tab it is |
+| `data_source_id` | `UUID` | The data source it shows; `NULL` for dashboards |
+| `dashboard_view_id` | `UUID` | For a dashboard widget, its dashboard; `NULL` otherwise |
+| `name`, `type` | `TEXT` | `type`: `table`, `board`, `calendar`, `timeline`, `gallery`, `list`, `form`, `chart`, `map` or `dashboard` |
+| `content` | `JSONB` | The [view object](https://developers.notion.com/reference/view) as returned, without `object`, `id`, `parent`, `url`, `created_*` and `last_edited_*`: `name`, `type`, `data_source_id`, `dashboard_view_id`, `filter`, `sorts`, `quick_filters`, `configuration`, and any other key the API returns |
+
+In `content`:
+- `filter` and `sorts` are a [filter](https://developers.notion.com/reference/filter-data-source-entries) and a list of [sorts](https://developers.notion.com/reference/sort-data-source-entries) (`NULL` when unset); a property is named by `property` (its name or ID), and select and status values by option name;
+- `configuration` depends on `type` ([view configuration](https://developers.notion.com/guides/data-apis/working-with-views#view-configuration)); in view types that have it (e.g. `table`), `configuration.properties` lists the view's properties as `{"property_id", "visible", "width"}`, `visible` saying whether the column is shown. For a dashboard, `configuration.rows` lists its rows, each with `widgets`, each with `view_id` (the widget view) and `row_index`.
+
+The order of a database's tabs is not available.
+
+**`notion.pages`**: one row per page, rows included.
+
+| Column | Type | Content |
+|---|---|---|
+| `page_id` | `UUID`, key | Also the ID of the `child_page` block showing it in its parent page |
+| `parent_type`, `parent_id` | `TEXT`, `UUID` | A row's parent is its data source (`data_source_id`) |
+| `title` | `JSONB` | Rich text; `NULL` for rows (their title is in their table) |
+| `icon` | `JSONB` | |
+| `is_locked` | `BOOLEAN` | |
+| `public_url` | `TEXT` | `NULL` unless published to the web |
+
+**`notion.blocks`**: one row per block of every page body.
+
+| Column | Type | Content |
+|---|---|---|
+| `block_id` | `UUID`, key | |
+| `page_id` | `UUID` | The page whose body it is in (a row's page for row bodies), at any depth |
+| `parent_block_id` | `UUID` | The block it is nested in; `NULL` at the top level of the body |
+| `position` | `INTEGER` | Order among its siblings, from 0 (gaps where a block is [not captured](#not-captured)) |
+| `type` | `TEXT` | Block type, e.g. `paragraph`, `heading_1`, `toggle`, `child_page`, `child_database`, `link_to_page`, `synced_block`, `table`, `table_row`, `tab`, `column_list`, `column`, `unsupported` |
+| `content` | `JSONB` | The block's [type object](https://developers.notion.com/reference/block#block-type-objects) as returned (e.g. `rich_text`, `color`, `checked`), without children |
+
+`content` by type, where it links to other entities:
+- `child_page` and `child_database`: `{"title"}`; the block ID is the page's or database's ID, and its body is that page's own, not this one's;
+- `link_to_page`: `{"type": "page_id", "page_id"}` or `{"type": "database_id", "database_id"}`;
+- `synced_block`: an original is `{"synced_from": null}`, with its blocks nested under it; a copy is `{"synced_from": {"type": "block_id", "block_id"}}` and has no blocks of its own;
+- `tab`: `{}`; its children are `paragraph` blocks (the tab label in `rich_text`, its `icon`) holding the tab's blocks;
+- `table`: `{"table_width", "has_column_header", "has_row_header"}`; its children are `table_row` blocks with `cells`, one rich text per column.
+
+### Page tree
+A page or database sits where its `parent_type` and `parent_id` point. A parent of type `block_id` is a block in `notion.blocks` (for example a toggle or a column): its `page_id` is the page containing it. Among the siblings in a page body, a sub-page or database is ordered by the `position` of the `child_page` or `child_database` block with its ID; pages and databases at the top level of the workspace have no recorded order. A row's database is the `database_id` of its data source; a linked database's data source is the `data_source_id` of its views.
 
 ## Consistency
 - DDL and data are written in one PostgreSQL transaction, so a failed run leaves the target as it was.
